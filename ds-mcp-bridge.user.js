@@ -206,13 +206,14 @@
     return content;
   }
 
+  // ── Hook XHR ──
   const XHRProto = unsafeWindow.XMLHttpRequest.prototype;
   const origOpen = XHRProto.open;
   const origSend = XHRProto.send;
   const xhrMeta = new WeakMap();
 
   XHRProto.open = function (method, url, ...rest) {
-    xhrMeta.set(this, { url, method, lastLen: 0 });
+    xhrMeta.set(this, { url, method });
     return origOpen.apply(this, [method, url, ...rest]);
   };
 
@@ -221,54 +222,93 @@
     if (!meta) return origSend.apply(this, [body]);
 
     const isCompletion = meta.url.includes('completion');
-
-    // Inject tool hint into outgoing request
-    if (isCompletion && body && toolRegistry.length) {
-      body = injectHint(body);
-    }
-
     if (isCompletion) {
-      console.log(`${SCRIPT_PREFIX} XHR completion intercepted, setting up progress listener`);
+      console.log(`${SCRIPT_PREFIX} [XHR] send → ${meta.url.substring(0, 80)}`);
 
-      // per-request accumulator (replaces global to avoid cross-request contamination)
+      if (body && toolRegistry.length) body = injectHint(body);
+
       let requestContent = '';
       let requestLastLen = 0;
 
-      // progress event fires during SSE streaming — responseText is readable here!
       this.addEventListener('progress', function () {
+        console.log(`${SCRIPT_PREFIX} [XHR] progress fired!`);
         try {
           const rt = this.responseText || '';
           if (rt.length <= requestLastLen) return;
           requestLastLen = rt.length;
-
-          // Parse full SSE response (idempotent — produces same result each time)
-          // This replaces previous accumulated content, not appends
           requestContent = parseSSEChunk(rt);
-          _streamContent = requestContent; // update global for UI
+          console.log(`${SCRIPT_PREFIX} [XHR] progress content len=${requestContent.length}`);
 
-          // Debounce tool call check (avoid firing mid-token)
           if (_streamDebounce) clearTimeout(_streamDebounce);
           _streamDebounce = setTimeout(() => {
             if (requestContent) checkForToolCalls(requestContent);
           }, 1000);
-        } catch { /* responseText may throw during streaming on some browsers */ }
+        } catch (e) { console.log(`${SCRIPT_PREFIX} [XHR] progress error: ${e.message}`); }
       });
 
-      // Also check on load (stream complete)
       this.addEventListener('load', function () {
+        console.log(`${SCRIPT_PREFIX} [XHR] load fired`);
         try {
           const rt = this.responseText || '';
-          if (rt.length > meta.lastLen) {
-            const remaining = parseSSEChunk(rt);
-            if (remaining) _streamContent += remaining;
+          console.log(`${SCRIPT_PREFIX} [XHR] load responseText len=${rt.length}`);
+          if (rt) {
+            requestContent = parseSSEChunk(rt);
+            console.log(`${SCRIPT_PREFIX} [XHR] load parsed content len=${requestContent.length}`);
           }
-        } catch {}
+        } catch (e) { console.log(`${SCRIPT_PREFIX} [XHR] load error: ${e.message}`); }
         if (_streamDebounce) clearTimeout(_streamDebounce);
-        checkForToolCalls(_streamContent);
+        checkForToolCalls(requestContent);
       });
     }
 
     return origSend.apply(this, [body]);
+  };
+
+  // ── Hook fetch (backup) ──
+  const origFetch = unsafeWindow.fetch;
+
+  unsafeWindow.fetch = async function (...args) {
+    const url = (typeof args[0] === 'string') ? args[0] : args[0]?.url;
+
+    if (url && url.includes('completion')) {
+      console.log(`${SCRIPT_PREFIX} [fetch] → ${url.substring(0, 80)}`);
+
+      // Inject tool hint
+      if (args[1]?.body && toolRegistry.length) {
+        args[1].body = injectHint(args[1].body);
+      }
+
+      const response = await origFetch.apply(this, args);
+      const contentType = response.headers?.get('content-type') || '';
+      console.log(`${SCRIPT_PREFIX} [fetch] response content-type: ${contentType}`);
+
+      // Check if this is a streaming response
+      if (contentType.includes('stream') || contentType.includes('event-stream')) {
+        console.log(`${SCRIPT_PREFIX} [fetch] SSE streaming response detected, reading via clone()`);
+        const clone = response.clone();
+
+        clone.text().then(text => {
+          console.log(`${SCRIPT_PREFIX} [fetch] clone text len=${text.length}`);
+          const content = parseSSEChunk(text);
+          console.log(`${SCRIPT_PREFIX} [fetch] parsed content len=${content.length}`);
+          if (content) checkForToolCalls(content);
+        }).catch(e => console.error(`${SCRIPT_PREFIX} [fetch] clone read error:`, e));
+      } else {
+        // Non-streaming, try to read directly
+        const clone = response.clone();
+        clone.text().then(text => {
+          console.log(`${SCRIPT_PREFIX} [fetch] non-stream response len=${text.length}`);
+          try {
+            const data = JSON.parse(text);
+            console.log(`${SCRIPT_PREFIX} [fetch] JSON keys:`, Object.keys(data));
+          } catch {}
+        }).catch(() => {});
+      }
+
+      return response;
+    }
+
+    return origFetch.apply(this, args);
   };
 
   // ═══════════════════════════════════════════════════════════════
