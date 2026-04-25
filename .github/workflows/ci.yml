@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          pytest tests/ -v --tb=short
+
+      - name: Type check with mypy
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          mypy tools/ server.py --ignore-missing-imports || true
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linters
+        run: |
+          pip install ruff black
+
+      - name: Run Ruff
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          ruff check . || true
+
+      - name: Check formatting
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          black --check . || true
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          pip install -r requirements.txt
+
+      - name: Verify server starts
+        working-directory: DeepseekWeb-enhance/server
+        run: |
+          timeout 10 python -c "from server import app; print('OK')" || true

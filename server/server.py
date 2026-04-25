@@ -11,30 +11,48 @@ Usage:
     python server.py --config other.json
 """
 
+from __future__ import annotations
+
 import json
 import uuid
 import argparse
 import logging
 import sys
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import tool modules
 from tools.shell import TOOL_DEFINITIONS as SHELL_TOOLS, HANDLERS as SHELL_HANDLERS
 from tools.search import TOOL_DEFINITIONS as SEARCH_TOOLS, ASYNC_HANDLERS as SEARCH_HANDLERS
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+    ]
+)
 logger = logging.getLogger("ds-mcp-bridge")
+
+
+def setup_file_logging(log_file: str | None) -> None:
+    if log_file:
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(file_handler)
+        logger.info(f"Logging to file: {log_file}")
 
 # ─── Config ────────────────────────────────────────────────────
 CONFIG_PATH = Path(__file__).parent / "mcp.json"
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
+def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
     try:
         with open(path, encoding='utf-8') as f:
             return json.load(f)
@@ -50,10 +68,9 @@ config = load_config()
 server_cfg = config.get("server", {})
 
 # ─── Tool Registry ─────────────────────────────────────────────
-# Merge all tool definitions and handlers
-ALL_TOOLS = {}
-SYNC_HANDLERS = {}
-ASYNC_HANDLERS_MAP = {}
+ALL_TOOLS: dict[str, dict[str, Any]] = {}
+SYNC_HANDLERS: dict[str, Any] = {}
+ASYNC_HANDLERS_MAP: dict[str, Any] = {}
 
 # Shell tools (sync)
 for tool_def in SHELL_TOOLS:
@@ -79,8 +96,25 @@ if not enabled_tools:
 
 logger.info(f"Enabled tools: {sorted(enabled_tools)}")
 
-# ─── Sessions ──────────────────────────────────────────────────
-sessions: dict[str, dict] = {}
+SESSION_TIMEOUT_MINUTES = 30
+SESSION_MAX_COUNT = 100
+sessions: dict[str, dict[str, Any]] = {}
+
+def cleanup_expired_sessions() -> None:
+    now = datetime.now()
+    expired = [
+        sid for sid, data in sessions.items()
+        if data.get("last_activity") and now - data["last_activity"] > timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+    ]
+    for sid in expired:
+        del sessions[sid]
+        logger.info(f"Session expired: {sid}")
+    
+    if len(sessions) > SESSION_MAX_COUNT:
+        oldest = sorted(sessions.items(), key=lambda x: x[1].get("last_activity", datetime.min))[:len(sessions) - SESSION_MAX_COUNT]
+        for sid, _ in oldest:
+            del sessions[sid]
+            logger.info(f"Session evicted (max count): {sid}")
 
 # ─── App ───────────────────────────────────────────────────────
 app = FastAPI(title="DS MCP Bridge", version="1.0.0")
@@ -138,8 +172,9 @@ async def handle_jsonrpc(msg: dict):
     logger.info(f"Request: {method} (id={msg_id})")
 
     if method == "initialize":
+        cleanup_expired_sessions()
         session_id = str(uuid.uuid4())
-        sessions[session_id] = {"client": params.get("clientInfo", {})}
+        sessions[session_id] = {"client": params.get("clientInfo", {}), "last_activity": datetime.now()}
         logger.info(f"Session created: {session_id}")
         return {
             "jsonrpc": "2.0",
@@ -216,7 +251,10 @@ if __name__ == "__main__":
     parser.add_argument("--host", default=server_cfg.get("host", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=server_cfg.get("port", 8024))
     parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--log-file", type=str, default=None, help="Log file path")
     args = parser.parse_args()
+
+    setup_file_logging(args.log_file)
 
     if args.config:
         config = load_config(Path(args.config))

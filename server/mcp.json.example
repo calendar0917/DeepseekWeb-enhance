@@ -1,0 +1,19 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8024
+  },
+  "services": {
+    "shell": {
+      "type": "builtin",
+      "tools": ["execute_command", "get_cwd", "list_directory", "read_file", "write_file"]
+    },
+    "web_search": {
+      "type": "builtin",
+      "tools": ["bing_search", "crawl_webpage"],
+      "config": {
+        "bing_api_key": "YOUR_BING_API_KEY_HERE"
+      }
+    }
+  }
+}

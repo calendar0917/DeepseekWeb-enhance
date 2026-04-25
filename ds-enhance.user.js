@@ -16,6 +16,8 @@
   const LS_CATS = 'dse_categories';
   const LS_PROMPT = 'dse_custom_prompt';
   const CUSTOM_PROMPT_MARKER = '[自定义提示词]';
+  const CAT_DATA_VERSION = 2;
+  const MAX_SESSION_PAGES = 100;
 
   // ═══════════════════════════════════════════════════════════════════
   //  Prompt Injection (runs at document-start, before page scripts)
@@ -116,7 +118,7 @@
   async function fetchAllSessions() {
     const sessions = [];
     let cursor = null;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < MAX_SESSION_PAGES; i++) {
       const data = await fetchSessionsPage(cursor);
       const biz = data?.biz_data;
       const list = biz?.chat_sessions || [];
@@ -139,10 +141,38 @@
   //  Categories (localStorage)
   // ═══════════════════════════════════════════════════════════════════
   function loadCats() {
-    try { return JSON.parse(localStorage.getItem(LS_CATS)) || { categories: [], sessionMap: {} }; }
-    catch { return { categories: [], sessionMap: {} }; }
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_CATS)) || { categories: [], sessionMap: {} };
+      if (raw.version !== CAT_DATA_VERSION) {
+        console.log('[DSE] Migrating category data from version', raw.version, 'to', CAT_DATA_VERSION);
+        const migrated = migrateCatData(raw);
+        saveCats(migrated);
+        return migrated;
+      }
+      return raw;
+    }
+    catch { return { version: CAT_DATA_VERSION, categories: [], sessionMap: {} }; }
   }
-  function saveCats(data) { localStorage.setItem(LS_CATS, JSON.stringify(data)); }
+  
+  function migrateCatData(old) {
+    const base = { version: CAT_DATA_VERSION, categories: [], sessionMap: {} };
+    if (Array.isArray(old.categories)) {
+      base.categories = old.categories.map(c => ({
+        id: c.id || 'cat_' + Date.now() + Math.random(),
+        name: c.name || 'Unnamed',
+        color: c.color || '#3b82f6',
+      }));
+    }
+    if (old.sessionMap && typeof old.sessionMap === 'object') {
+      base.sessionMap = old.sessionMap;
+    }
+    return base;
+  }
+  
+  function saveCats(data) { 
+    data.version = CAT_DATA_VERSION;
+    localStorage.setItem(LS_CATS, JSON.stringify(data)); 
+  }
   let catData = loadCats();
 
   function addCategory(name, color) {
@@ -301,6 +331,9 @@
   fab.id = 'dse-fab';
   fab.innerHTML = '&#9881;';
   fab.title = 'DeepSeek 增强 (可拖动)';
+  fab.setAttribute('aria-label', 'DeepSeek 增强工具面板');
+  fab.setAttribute('role', 'button');
+  fab.setAttribute('aria-expanded', 'false');
   document.body.appendChild(fab);
 
   let fabDragged = false, fabSX, fabSY, fabOX, fabOY;
@@ -335,7 +368,12 @@
     const up = () => {
       document.removeEventListener('pointermove', mv);
       document.removeEventListener('pointerup', up);
-      if (!fabDragged) { panel.classList.toggle('open'); if (panel.classList.contains('open')) posPanel(); }
+      if (!fabDragged) { 
+        panel.classList.toggle('open'); 
+        const isOpen = panel.classList.contains('open');
+        fab.setAttribute('aria-expanded', String(isOpen));
+        if (isOpen) posPanel(); 
+      }
       else if (panel.classList.contains('open')) posPanel();
     };
     document.addEventListener('pointermove', mv);
@@ -350,17 +388,17 @@
   //  Panel HTML
   // ═══════════════════════════════════════════════════════════════════
   panel.innerHTML = `
-    <div class="hd"><h3>DeepSeek 增强</h3><button class="cls">&times;</button></div>
-    <div id="dse-tabs">
-      <button class="active" data-tab="batch">批量删除</button>
-      <button data-tab="fork">Fork</button>
-      <button data-tab="cats">分类</button>
-      <button data-tab="search">搜索</button>
-      <button data-tab="export">导出</button>
-      <button data-tab="rename">重命名</button>
-      <button data-tab="prompt">提示词</button>
+    <div class="hd"><h3 id="dse-panel-title">DeepSeek 增强</h3><button class="cls" aria-label="关闭面板">&times;</button></div>
+    <div id="dse-tabs" role="tablist" aria-label="功能选项卡">
+      <button class="active" data-tab="batch" role="tab" aria-selected="true" aria-controls="sec-batch">批量删除</button>
+      <button data-tab="fork" role="tab" aria-selected="false" aria-controls="sec-fork">Fork</button>
+      <button data-tab="cats" role="tab" aria-selected="false" aria-controls="sec-cats">分类</button>
+      <button data-tab="search" role="tab" aria-selected="false" aria-controls="sec-search">搜索</button>
+      <button data-tab="export" role="tab" aria-selected="false" aria-controls="sec-export">导出</button>
+      <button data-tab="rename" role="tab" aria-selected="false" aria-controls="sec-rename">重命名</button>
+      <button data-tab="prompt" role="tab" aria-selected="false" aria-controls="sec-prompt">提示词</button>
     </div>
-    <div class="dse-bd">
+    <div class="dse-bd" role="tabpanel" aria-labelledby="dse-panel-title">
 
       <!-- batch delete -->
       <div id="sec-batch" class="dse-section active">
@@ -504,8 +542,12 @@
   // ═══════════════════════════════════════════════════════════════════
   panel.querySelectorAll('#dse-tabs button').forEach(btn => {
     btn.onclick = () => {
-      panel.querySelectorAll('#dse-tabs button').forEach(b => b.classList.remove('active'));
+      panel.querySelectorAll('#dse-tabs button').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-selected', 'false');
+      });
       btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
       const tab = btn.dataset.tab;
       panel.querySelectorAll('.dse-section').forEach(s => s.classList.remove('active'));
       panel.querySelector(`#sec-${tab}`).classList.add('active');
@@ -603,11 +645,27 @@
     if (!selIds.size) { toast('请先选择', 'error'); return; }
     if (!confirm(`确定删除 ${selIds.size} 条对话？不可撤销。`)) return;
     const ids = [...selIds]; let ok = 0, fail = 0;
+    const failedIds = [];
     for (let i = 0; i < ids.length; i++) {
       showBatchProg(`删除中 ${i + 1}/${ids.length}`, ((i + 1) / ids.length) * 100);
-      try { await apiDelete(ids[i]); ok++; } catch { fail++; }
+      try { await apiDelete(ids[i]); ok++; } catch { fail++; failedIds.push(ids[i]); }
     }
-    hideBatchProg(); toast(`完成: 成功 ${ok}, 失败 ${fail}`, ok ? 'success' : 'error');
+    hideBatchProg();
+    
+    if (failedIds.length > 0) {
+      const retryDiv = document.createElement('div');
+      retryDiv.style.cssText = 'margin-top:10px;padding:10px;background:#2a1a1a;border-radius:8px';
+      retryDiv.innerHTML = `<div style="color:#f87171;margin-bottom:8px">${failedIds.length} 条删除失败</div><button class="dse-btn" id="batch-retry" style="padding:6px 12px;border-radius:6px;background:#7f1d1d;color:#fff;border:none;cursor:pointer">重试失败项</button>`;
+      batchListEl.appendChild(retryDiv);
+      retryDiv.querySelector('#batch-retry').onclick = async () => {
+        retryDiv.remove();
+        selIds.clear();
+        failedIds.forEach(id => selIds.add(id));
+        panel.querySelector('#batch-del').click();
+      };
+    }
+    
+    toast(`完成: 成功 ${ok}, 失败 ${fail}`, ok ? 'success' : 'error');
     allSessions = await fetchAllSessions(); selIds.clear();
     renderList(batchListEl, allSessions, { onCheck: true, showCats: true });
   };
@@ -790,8 +848,10 @@
       try {
         const text = await file.text();
         const data = JSON.parse(text);
-        if (!data.categories || !data.sessionMap) throw new Error('格式错误');
-        catData = data; saveCats(catData);
+        if (!Array.isArray(data.categories)) throw new Error('缺少 categories 数组');
+        if (data.sessionMap && typeof data.sessionMap !== 'object') throw new Error('sessionMap 格式错误');
+        const migrated = migrateCatData(data);
+        catData = migrated; saveCats(catData);
         renderCatChips(); renderCatFilterBar();
         toast('分类数据已导入', 'success');
       } catch (e) { toast(`导入失败: ${e.message}`, 'error'); }
@@ -862,14 +922,18 @@
     } else {
       let md = '';
       results.forEach(r => {
-        md += `# ${r.session?.title || '(无标题)'}\n\n`;
+        const safeTitle = (r.session?.title || '(无标题)').replace(/[#\n\r]/g, ' ').trim();
+        md += `# ${safeTitle}\n\n`;
         md += `- 日期: ${fmtDate(r.session?.updated_at)}\n`;
         md += `- ID: ${r.session?.id}\n\n`;
         if (r.error) { md += `> 导出失败: ${r.error}\n\n`; return; }
-        // Sort messages: follow tree structure, just list in order
         r.messages.forEach(m => {
           const role = m.role === 'USER' ? '**用户**' : '**助手**';
-          md += `### ${role}\n\n${m.content || ''}\n\n---\n\n`;
+          const content = m.content || '';
+          const escapedContent = content
+            .replace(/```/g, '\\`\\`\\`')
+            .replace(/^### /gm, '### ');
+          md += `### ${role}\n\n${escapedContent}\n\n---\n\n`;
         });
         md += '\n';
       });
@@ -982,7 +1046,6 @@
   panel.querySelector('#rnm-go').onclick = async () => {
     const mode = rnmMode.value;
 
-    // Direct rename mode: read from inline inputs
     if (mode === 'direct') {
       const inputs = rnmListEl.querySelectorAll('input[data-sid]');
       if (!inputs.length) { toast('请先点击「加载对话列表」', 'error'); return; }
@@ -998,30 +1061,43 @@
       if (!renames.length) { toast('没有需要修改的标题', 'info'); return; }
       if (!confirm(`确定重命名 ${renames.length} 条对话？`)) return;
       let ok = 0, fail = 0;
+      const failedRenames = [];
       for (let i = 0; i < renames.length; i++) {
         showRnmProg(`重命名中 ${i + 1}/${renames.length}`, ((i + 1) / renames.length) * 100);
-        try { await apiRename(renames[i].id, renames[i].title); ok++; } catch { fail++; }
+        try { await apiRename(renames[i].id, renames[i].title); ok++; } catch { fail++; failedRenames.push(renames[i]); }
       }
       hideRnmProg();
-      toast(`完成: 成功 ${ok}, 失败 ${fail}`, ok ? 'success' : 'error');
+      
+      if (failedRenames.length > 0) {
+        toast(`${failedRenames.length} 条重命名失败，请检查网络后重试`, 'error');
+      } else {
+        toast(`完成: 成功 ${ok}`, 'success');
+      }
+      
       allSessions = await fetchAllSessions();
       renderDirectRenameList(allSessions);
       return;
     }
 
-    // Batch modes
     if (!selIds.size) { toast('请先选择', 'error'); return; }
     const selected = allSessions.filter(s => selIds.has(s.id));
     if (!confirm(`确定重命名 ${selected.length} 条对话？`)) return;
 
     let ok = 0, fail = 0;
+    const failedIds = [];
     for (let i = 0; i < selected.length; i++) {
       showRnmProg(`重命名中 ${i + 1}/${selected.length}`, ((i + 1) / selected.length) * 100);
       const newT = getNewTitle(selected[i], i, mode);
-      try { await apiRename(selected[i].id, newT); ok++; } catch { fail++; }
+      try { await apiRename(selected[i].id, newT); ok++; } catch { fail++; failedIds.push(selected[i].id); }
     }
     hideRnmProg();
-    toast(`完成: 成功 ${ok}, 失败 ${fail}`, ok ? 'success' : 'error');
+    
+    if (failedIds.length > 0) {
+      toast(`${failedIds.length} 条重命名失败`, 'error');
+    } else {
+      toast(`完成: 成功 ${ok}`, 'success');
+    }
+    
     allSessions = await fetchAllSessions(); selIds.clear();
     renderList(rnmListEl, allSessions, { onCheck: true, showCats: true });
     rnmPreviewEl.innerHTML = '';

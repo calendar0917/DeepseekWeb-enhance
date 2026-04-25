@@ -1,5 +1,9 @@
 """Web search and crawl tools."""
 
+from __future__ import annotations
+
+from typing import Any
+
 import httpx
 from bs4 import BeautifulSoup
 
@@ -23,7 +27,7 @@ async def bing_search(query: str, count: int = 10, offset: int = 0, api_key: str
         if not results:
             return "No results found."
 
-        lines = []
+        lines: list[str] = []
         for i, r in enumerate(results, offset + 1):
             lines.append(f"{i}. {r.get('name', '')}")
             lines.append(f"   URL: {r.get('url', '')}")
@@ -43,11 +47,9 @@ async def crawl_webpage(url: str, max_length: int = 10000) -> str:
             resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        # Remove scripts and styles
         for tag in soup(["script", "style", "nav", "footer", "header"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        # Collapse multiple blank lines
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         text = "\n".join(lines)
         if len(text) > max_length:
@@ -57,7 +59,7 @@ async def crawl_webpage(url: str, max_length: int = 10000) -> str:
         return f"Crawl error: {e}"
 
 
-TOOL_DEFINITIONS = [
+TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "bing_search",
         "description": "Search the web using Bing",
@@ -85,8 +87,7 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-# Note: search handlers are async, server handles this distinction
-ASYNC_HANDLERS = {
+ASYNC_HANDLERS: dict[str, Any] = {
     "bing_search": bing_search,
     "crawl_webpage": crawl_webpage,
 }

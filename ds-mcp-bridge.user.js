@@ -18,6 +18,7 @@
   const SCRIPT_PREFIX = '[Bridge]';
   const DEFAULT_MCP_URL = 'http://localhost:8024/mcp';
   const TOOL_CALL_RE = /```mcp:(\w+)\n([\s\S]*?)```/g;
+  const EXECUTED_CALLS_MAX_SIZE = 100;
 
   // ═══════════════════════════════════════════════════════════════
   //  MCP Client (GM_xmlhttpRequest to bypass CORS)
@@ -167,9 +168,38 @@
   // ═══════════════════════════════════════════════════════════════
   const executedCalls = new Set();
   let _streamDebounce = null;
+  let _lastSessionId = null;
+
+  function clearExecutedCalls() {
+    executedCalls.clear();
+    console.log(`${SCRIPT_PREFIX} Cleared executed calls cache`);
+  }
+
+  function addExecutedCall(key) {
+    if (executedCalls.size >= EXECUTED_CALLS_MAX_SIZE) {
+      const firstKey = executedCalls.values().next().value;
+      executedCalls.delete(firstKey);
+    }
+    executedCalls.add(key);
+  }
+
+  function detectNewConversation() {
+    const sessionId = getSessionId();
+    if (sessionId && sessionId !== _lastSessionId) {
+      _lastSessionId = sessionId;
+      clearExecutedCalls();
+    }
+  }
+
+  function getSessionId() {
+    const m = location.pathname.match(/\/s\/([a-f0-9-]+)/);
+    return m ? m[1] : null;
+  }
 
   function checkForToolCalls(content) {
     if (!content || !toolRegistry.length) return;
+
+    detectNewConversation();
 
     // Strategy 1: Match ```mcp:tool_name\n{...}\n```
     const re = new RegExp(TOOL_CALL_RE.source, 'g');
@@ -183,7 +213,7 @@
 
       const key = toolName + ':' + JSON.stringify(args);
       if (executedCalls.has(key)) continue;
-      executedCalls.add(key);
+      addExecutedCall(key);
 
       console.log(`${SCRIPT_PREFIX} Tool call: ${toolName}`, args);
       executeToolCall(toolName, args);
@@ -210,7 +240,7 @@
 
       const key = name + ':' + JSON.stringify(args);
       if (executedCalls.has(key)) continue;
-      executedCalls.add(key);
+      addExecutedCall(key);
 
       console.log(`${SCRIPT_PREFIX} Tool call: ${name}`, args);
       executeToolCall(name, args);
@@ -355,28 +385,35 @@
   }
 
   function injectResultToChat(resultText) {
-    setTimeout(async () => {
-      const wrappedText = `<tool_result>\n${resultText}\n</tool_result>`;
-
+    const wrappedText = `<tool_result>\n${resultText}\n</tool_result>`;
+    
+    const tryInject = (retries = 0) => {
       const input = findInputElement();
       if (!input) {
-        toast('找不到聊天输入框', 'error');
+        if (retries < 5) {
+          setTimeout(() => tryInject(retries + 1), 500);
+        } else {
+          toast('找不到聊天输入框', 'error');
+        }
         return;
       }
 
       input.focus();
-      await sleep(200);
       setInputValue(input, wrappedText);
-      await sleep(500);
-      simulateEnter(input);
-      await sleep(300);
+      
+      setTimeout(() => {
+        const sendBtn = findSendButton();
+        if (sendBtn) {
+          sendBtn.click();
+          toast('工具结果已发送', 'success');
+        } else {
+          simulateEnter(input);
+          toast('工具结果已发送', 'success');
+        }
+      }, 300);
+    };
 
-      // Fallback: click send button
-      const sendBtn = findSendButton();
-      if (sendBtn) sendBtn.click();
-
-      toast('工具结果已发送', 'success');
-    }, 1500);
+    setTimeout(() => tryInject(), 800);
   }
 
   function findInputElement() {
@@ -544,11 +581,13 @@
     style.textContent = PANEL_CSS;
     document.head.appendChild(style);
 
-    // FAB
     const fab = document.createElement('button');
     fab.id = 'mcp-fab';
     fab.innerHTML = '&#9881;';
     fab.title = 'DS MCP Bridge (可拖动)';
+    fab.setAttribute('aria-label', 'MCP Bridge 工具面板');
+    fab.setAttribute('role', 'button');
+    fab.setAttribute('aria-expanded', 'false');
     document.body.appendChild(fab);
 
     // Panel
@@ -604,7 +643,12 @@
       const up = () => {
         document.removeEventListener('pointermove', mv);
         document.removeEventListener('pointerup', up);
-        if (!fabDragged) { panel.classList.toggle('open'); if (panel.classList.contains('open')) { posPanel(); refreshStatus(); } }
+        if (!fabDragged) { 
+          panel.classList.toggle('open'); 
+          const isOpen = panel.classList.contains('open');
+          fab.setAttribute('aria-expanded', String(isOpen));
+          if (isOpen) { posPanel(); refreshStatus(); } 
+        }
         else if (panel.classList.contains('open')) posPanel();
       };
       document.addEventListener('pointermove', mv);
