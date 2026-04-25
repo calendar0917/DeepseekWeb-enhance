@@ -36,7 +36,7 @@ CONFIG_PATH = Path(__file__).parent / "mcp.json"
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
     try:
-        with open(path) as f:
+        with open(path, encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
         logger.warning(f"Config not found at {path}, using defaults")
