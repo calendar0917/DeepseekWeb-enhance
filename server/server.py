@@ -36,6 +36,8 @@ from tools.mcp_external import ExternalMCPProxy
 from tools.tts import TOOL_DEFINITIONS as TTS_TOOLS, tts_synthesize, list_edge_voices
 from tools.file_processor import process_file
 
+__version__ = "4.0.0"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -67,7 +69,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
         logger.warning(f"Config not found at {path}, using defaults")
         return {"server": {"host": "0.0.0.0", "port": 8024}, "services": {}}
     except json.JSONDecodeError as e:
-        logger.error(f"Invalid config: {e}")
+        logger.error(f"配置文件格式错误: {e}")
         sys.exit(1)
 
 
@@ -144,7 +146,7 @@ async def lifespan(application: FastAPI):
     # Shutdown: stop external servers
     await external_proxy.stop_all()
 
-app = FastAPI(title="DS MCP Bridge", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="DS MCP Bridge", version=__version__, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -172,7 +174,7 @@ async def mcp_endpoint(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": None}, status_code=400)
+        return JSONResponse({"jsonrpc": "2.0", "error": {"code": -32700, "message": "请求体 JSON 解析失败，请确认发送了有效的 JSON 数据"}, "id": None}, status_code=400)
 
     # Handle batch
     if isinstance(body, list):
@@ -208,7 +210,7 @@ async def add_external_server(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "请求体 JSON 格式无效"}, status_code=400)
 
     # Detect batch format: mcpServers wrapper or {name: config, ...} map
     servers_map = None
@@ -222,7 +224,7 @@ async def add_external_server(request: Request):
         results = []
         for srv_name, srv_cfg in servers_map.items():
             if not isinstance(srv_cfg, dict):
-                results.append({"name": srv_name, "ok": False, "error": "Invalid config"})
+                results.append({"name": srv_name, "ok": False, "error": "配置格式无效 — 必须是一个 JSON 对象"})
                 continue
             try:
                 r = await external_proxy.add_server(srv_name, srv_cfg)
@@ -234,7 +236,7 @@ async def add_external_server(request: Request):
     # Single server format
     name = body.pop("name", "").strip()
     if not name:
-        return JSONResponse({"ok": False, "error": "Missing 'name'"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "缺少 'name' 字段，请为 MCP 服务器指定一个名称"}, status_code=400)
 
     try:
         result = await external_proxy.add_server(name, body)
@@ -298,7 +300,7 @@ async def install_preset(preset_id: str, request: Request):
     presets = load_presets()
     preset = next((p for p in presets if p["id"] == preset_id), None)
     if not preset:
-        return JSONResponse({"ok": False, "error": f"Preset '{preset_id}' not found"}, status_code=404)
+        return JSONResponse({"ok": False, "error": f"预设 '{preset_id}' 不存在，请检查预设 ID 是否正确"}, status_code=404)
 
     try:
         body = await request.json()
@@ -313,7 +315,7 @@ async def install_preset(preset_id: str, request: Request):
             missing.append(param["label"])
     if missing:
         return JSONResponse(
-            {"ok": False, "error": f"Missing required params: {', '.join(missing)}"},
+            {"ok": False, "error": f"缺少必填参数: {', '.join(missing)}，请补充这些参数后重试"},
             status_code=400,
         )
 
@@ -347,8 +349,8 @@ async def install_preset(preset_id: str, request: Request):
     try:
         result = await external_proxy.add_server(server_name, cfg)
     except Exception as e:
-        logger.error(f"install_preset error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        logger.error(f"安装预设失败: {e}")
+        return JSONResponse({"ok": False, "error": f"安装预设时出错: {e}。请检查依赖是否已安装（如 npx、node 等）"}, status_code=500)
 
     status_code = 200 if result["ok"] else 400
     return JSONResponse(result, status_code=status_code)
@@ -378,7 +380,7 @@ async def handle_jsonrpc(msg: dict):
             "result": {
                 "protocolVersion": "2025-03-26",
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "ds-mcp-bridge", "version": "1.0.0"},
+                "serverInfo": {"name": "ds-mcp-bridge", "version": __version__},
                 "sessionId": session_id,
             },
         }
@@ -399,7 +401,7 @@ async def handle_jsonrpc(msg: dict):
 
         # Check external tools first
         if tool_name in external_proxy.get_all_tool_names():
-            logger.info(f"External tool call: {tool_name}({json.dumps(arguments, ensure_ascii=False)[:200]})")
+            logger.info(f"外部工具调用: {tool_name}({json.dumps(arguments, ensure_ascii=False)[:200]})")
             try:
                 ext_result = await external_proxy.call_tool(tool_name, arguments)
                 if "error" in ext_result:
@@ -421,21 +423,21 @@ async def handle_jsonrpc(msg: dict):
                     "result": {"content": [{"type": "text", "text": json.dumps(ext_result, ensure_ascii=False)}], "isError": False},
                 }
             except Exception as e:
-                logger.error(f"External tool error: {e}")
+                logger.error(f"外部工具调用失败: {e}")
                 return {
                     "jsonrpc": "2.0",
                     "id": msg_id,
-                    "result": {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True},
+                    "result": {"content": [{"type": "text", "text": f"外部工具调用异常: {e}"}], "isError": True},
                 }
 
         if tool_name not in enabled_tools:
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
-                "result": {"content": [{"type": "text", "text": f"Error: tool '{tool_name}' not available"}], "isError": True},
+                "result": {"content": [{"type": "text", "text": f"工具 '{tool_name}' 未启用。请在 mcp.json 的 services 配置中启用该工具，或联系管理员"}], "isError": True},
             }
 
-        logger.info(f"Tool call: {tool_name}({json.dumps(arguments, ensure_ascii=False)[:200]})")
+        logger.info(f"工具调用: {tool_name}({json.dumps(arguments, ensure_ascii=False)[:200]})")
 
         try:
             if tool_name in ASYNC_HANDLERS_MAP:
@@ -449,7 +451,7 @@ async def handle_jsonrpc(msg: dict):
             elif tool_name in SYNC_HANDLERS:
                 result_text = SYNC_HANDLERS[tool_name](arguments)
             else:
-                result_text = f"Error: no handler for '{tool_name}'"
+                result_text = f"工具 '{tool_name}' 没有对应的处理器，可能是配置错误"
 
             return {
                 "jsonrpc": "2.0",
@@ -457,18 +459,18 @@ async def handle_jsonrpc(msg: dict):
                 "result": {"content": [{"type": "text", "text": str(result_text)}], "isError": False},
             }
         except Exception as e:
-            logger.error(f"Tool error: {e}")
+            logger.error(f"工具执行失败: {e}")
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
-                "result": {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True},
+                "result": {"content": [{"type": "text", "text": f"工具执行异常: {e}"}], "isError": True},
             }
 
     # Unknown method
     return {
         "jsonrpc": "2.0",
         "id": msg_id,
-        "error": {"code": -32601, "message": f"Method not found: {method}"},
+        "error": {"code": -32601, "message": f"未知的 MCP 方法: '{method}'。支持的方法: initialize, tools/list, tools/call"},
     }
 
 
@@ -486,11 +488,11 @@ async def api_tts(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        return JSONResponse({"error": "请求体 JSON 格式无效"}, status_code=400)
 
     text = body.get("text", "").strip()
     if not text:
-        return JSONResponse({"error": "Missing 'text' field"}, status_code=400)
+        return JSONResponse({"error": "缺少 'text' 字段，请提供要朗读的文本内容"}, status_code=400)
 
     voice = body.get("voice", "xiaoxiao")
     provider = body.get("provider", "edge")
@@ -521,8 +523,8 @@ async def api_tts(request: Request):
             headers={"Content-Disposition": "inline; filename=tts.mp3"},
         )
     except Exception as e:
-        logger.error(f"TTS error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        logger.error(f"TTS 合成失败: {e}")
+        return JSONResponse({"error": f"语音合成失败: {e}"}, status_code=500)
 
 
 
@@ -539,15 +541,15 @@ async def api_tts_voices():
 async def api_upload(file: UploadFile = File(...)):
     """Process an uploaded file, return extracted text and metadata."""
     if not file.filename:
-        return JSONResponse({"error": "No filename provided"}, status_code=400)
+        return JSONResponse({"error": "未提供文件名，请确保上传请求中包含文件"}, status_code=400)
 
     try:
         file_bytes = await file.read()
     except Exception as e:
-        return JSONResponse({"error": f"Failed to read file: {e}"}, status_code=400)
+        return JSONResponse({"error": f"读取上传文件失败: {e}"}, status_code=400)
 
     if not file_bytes:
-        return JSONResponse({"error": "File is empty"}, status_code=400)
+        return JSONResponse({"error": "上传的文件内容为空"}, status_code=400)
 
     # Enforce concurrency limit
     acquired = await asyncio.wait_for(
@@ -567,8 +569,8 @@ async def api_upload(file: UploadFile = File(...)):
         )
         return JSONResponse(result.to_dict())
     except Exception as e:
-        logger.error(f"File processing error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        logger.error(f"文件处理失败: {e}")
+        return JSONResponse({"error": f"文件处理失败: {e}"}, status_code=500)
     finally:
         _upload_semaphore.release()
 

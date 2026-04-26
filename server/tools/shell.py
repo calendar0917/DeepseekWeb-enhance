@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import pathlib
+import sys
 from typing import Any
 
 WORKSPACE_ROOT: pathlib.Path = pathlib.Path(os.environ.get("DS_WORKSPACE", os.getcwd())).resolve()
+IS_WINDOWS: bool = sys.platform == "win32"
+PLATFORM_NAME: str = "Windows" if IS_WINDOWS else "Linux"
 
-DANGEROUS_PATTERNS: list[str] = [
-    # Unix
-    "rm -rf /", "rm -rf /*", ":(){ :|:& };:", "mkfs", "dd if=",
-    "> /dev/sd", "chmod 777 /", "chown root",
-    "kill", "pkill", "killall",
-    # Windows
-    "taskkill", "taskkill.exe",
-    "del /f /s /q", "rd /s /q", "rmdir /s /q",
-    "format ", "format.com", "diskpart",
+DANGEROUS_PATTERNS: list[re.Pattern] = [
+    # Unix — file system destruction
+    re.compile(r"rm\s+-[a-z]*r[a-z]*f[a-z]*\s+/"),       # rm -rf /, rm --no-preserve-root -rf /
+    re.compile(r"rm\s+-[a-z]*f[a-z]*r[a-z]*\s+/"),       # rm -fr /
+    re.compile(r":\(\)\s*\{\s*:\|\:\&\s*\}\s*;:"),        # fork bomb
+    re.compile(r"\bmkfs\b"),                               # mkfs, mkfs.ext4 etc.
+    re.compile(r"\bdd\s+if="),                             # dd if=...
+    re.compile(r">\s*/dev/sd"),                            # overwrite disk
+    re.compile(r"chmod\s+777\s+/"),                        # chmod 777 /
+    re.compile(r"chown\s+root\s+/"),                       # chown root /
+    # Unix — process kill (word boundary to avoid matching "skill", "killbill")
+    re.compile(r"\bkill\b"),                               # kill
+    re.compile(r"\bpkill\b"),                              # pkill
+    re.compile(r"\bkillall\b"),                            # killall
+    # Windows — process kill
+    re.compile(r"\btaskkill(\.exe)?\b"),                   # taskkill, taskkill.exe
+    # Windows — file system destruction (flags in any order)
+    re.compile(r"\bdel\s+(/[fFsSqQ]\s+){2,}/[fFsSqQ]"),  # del /f /s /q
+    re.compile(r"\brmdir\s+(/[sSqQ]\s+){1,}/[sSqQ]"),    # rmdir /s /q
+    re.compile(r"\brd\s+(/[sSqQ]\s+){1,}/[sSqQ]"),       # rd /s /q
+    re.compile(r"\bformat(\.com)?\b"),                     # format, format.com
+    re.compile(r"\bdiskpart\b"),                           # diskpart
 ]
 
 
@@ -27,7 +44,7 @@ def _validate_path(path: str) -> pathlib.Path:
     try:
         p.relative_to(WORKSPACE_ROOT)
     except ValueError:
-        raise ValueError(f"Path '{p}' is outside workspace '{WORKSPACE_ROOT}'")
+        raise ValueError(f"路径 '{p}' 超出工作区范围，仅允许访问 '{WORKSPACE_ROOT}' 内的文件")
     return p
 
 
@@ -35,8 +52,10 @@ def execute_command(command: str, timeout: int = 30) -> str:
     """Execute a shell command and return stdout/stderr."""
     cmd_lower = command.lower().strip()
     for pattern in DANGEROUS_PATTERNS:
-        if pattern in cmd_lower:
-            return f"Security: blocked dangerous pattern: {pattern}"
+        match = pattern.search(cmd_lower)
+        if match:
+            matched = match.group(0)
+            return f"安全拦截：命令中包含危险操作 '{matched}'，已阻止执行以保护系统安全"
 
     try:
         result = subprocess.run(
@@ -53,12 +72,16 @@ def execute_command(command: str, timeout: int = 30) -> str:
         if result.stderr:
             output += ("\n--- stderr ---\n" if output else "") + result.stderr
         if result.returncode != 0:
-            output += f"\n(exit code: {result.returncode})"
-        return output or "(no output)"
+            output += f"\n(退出码: {result.returncode})"
+            if IS_WINDOWS and result.returncode == 1 and "is not recognized" in (result.stderr or ""):
+                output += f"\n提示：当前运行在 Windows 上，请使用 cmd.exe 语法（如 dir 代替 ls，type 代替 cat）"
+            elif not IS_WINDOWS and result.returncode == 127:
+                output += "\n提示：命令未找到（退出码 127），请检查命令名称是否正确"
+        return output or "(命令执行完毕，无输出)"
     except subprocess.TimeoutExpired:
-        return f"Command timed out after {timeout}s"
+        return f"命令执行超时（限制 {timeout} 秒）。如需更长时间，请增大 timeout 参数"
     except Exception as e:
-        return f"Error: {e}"
+        return f"命令执行失败: {e}"
 
 
 def get_cwd() -> str:
@@ -71,12 +94,12 @@ def list_directory(path: str = ".") -> str:
     try:
         p = _validate_path(path)
     except ValueError as e:
-        return f"Error: {e}"
+        return str(e)
 
     if not p.exists():
-        return f"Error: path does not exist: {p}"
+        return f"错误：路径不存在 — {p}"
     if not p.is_dir():
-        return f"Error: not a directory: {p}"
+        return f"错误：这不是一个目录 — {p}"
 
     entries: list[str] = []
     try:
@@ -90,9 +113,9 @@ def list_directory(path: str = ".") -> str:
                     pass
             entries.append(f"{prefix}{item.name}{size}")
     except PermissionError:
-        return f"Error: permission denied: {p}"
+        return f"错误：没有权限访问目录 — {p}"
 
-    return "\n".join(entries) if entries else "(empty directory)"
+    return "\n".join(entries) if entries else "(空目录)"
 
 
 def read_file(path: str, encoding: str = "utf-8", max_bytes: int = 1_048_576) -> str:
@@ -100,21 +123,21 @@ def read_file(path: str, encoding: str = "utf-8", max_bytes: int = 1_048_576) ->
     try:
         p = _validate_path(path)
     except ValueError as e:
-        return f"Error: {e}"
+        return str(e)
 
     if not p.exists():
-        return f"Error: file does not exist: {p}"
+        return f"错误：文件不存在 — {p}"
     if not p.is_file():
-        return f"Error: not a file: {p}"
+        return f"错误：这不是一个文件 — {p}"
     try:
         size = p.stat().st_size
         if size > max_bytes:
-            return f"Error: file too large ({size:,} bytes, limit {max_bytes:,})"
+            return f"错误：文件过大（{size:,} 字节，限制 {max_bytes:,} 字节）。请增大 max_bytes 参数或读取部分内容"
         return p.read_text(encoding=encoding)
     except UnicodeDecodeError:
-        return f"Error: cannot decode as {encoding}"
+        return f"错误：无法以 '{encoding}' 编码读取文件，文件可能包含二进制数据，请尝试其他编码"
     except Exception as e:
-        return f"Error: {e}"
+        return f"读取文件失败: {e}"
 
 
 def write_file(path: str, content: str, encoding: str = "utf-8") -> str:
@@ -122,64 +145,64 @@ def write_file(path: str, content: str, encoding: str = "utf-8") -> str:
     try:
         p = _validate_path(path)
     except ValueError as e:
-        return f"Error: {e}"
+        return str(e)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding=encoding)
-        return f"Written {len(content):,} characters to {p}"
+        return f"已写入 {len(content):,} 个字符到 {p}"
     except Exception as e:
-        return f"Error: {e}"
+        return f"写入文件失败: {e}"
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "execute_command",
-        "description": f"Execute a shell command. Workspace: {WORKSPACE_ROOT}",
+        "description": f"执行 shell 命令。工作区: {WORKSPACE_ROOT}（平台: {PLATFORM_NAME}，{'请使用 cmd.exe 语法' if IS_WINDOWS else '请使用 bash 语法'}）",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "The shell command to execute"},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
+                "command": {"type": "string", "description": "要执行的 shell 命令"},
+                "timeout": {"type": "integer", "description": "超时时间（秒，默认 30）"},
             },
             "required": ["command"],
         },
     },
     {
         "name": "get_cwd",
-        "description": f"Get the current workspace directory ({WORKSPACE_ROOT})",
+        "description": f"获取当前工作区目录路径（{WORKSPACE_ROOT}）",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "list_directory",
-        "description": "List contents of a directory within workspace",
+        "description": "列出工作区内指定目录的文件和子目录",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Directory path (default: current directory)"},
+                "path": {"type": "string", "description": "目录路径（默认为当前目录）"},
             },
         },
     },
     {
         "name": "read_file",
-        "description": "Read the contents of a file within workspace",
+        "description": "读取工作区内指定文件的内容",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to read"},
-                "encoding": {"type": "string", "description": "File encoding (default: utf-8)"},
+                "path": {"type": "string", "description": "要读取的文件路径"},
+                "encoding": {"type": "string", "description": "文件编码（默认: utf-8）"},
             },
             "required": ["path"],
         },
     },
     {
         "name": "write_file",
-        "description": "Write content to a file within workspace",
+        "description": "将内容写入工作区内的指定文件",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to write"},
-                "content": {"type": "string", "description": "Content to write"},
-                "encoding": {"type": "string", "description": "File encoding (default: utf-8)"},
+                "path": {"type": "string", "description": "要写入的文件路径"},
+                "content": {"type": "string", "description": "要写入的内容"},
+                "encoding": {"type": "string", "description": "文件编码（默认: utf-8）"},
             },
             "required": ["path", "content"],
         },

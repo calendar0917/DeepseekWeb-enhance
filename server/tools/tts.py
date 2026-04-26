@@ -18,7 +18,7 @@ async def _edge_tts_synthesize(text: str, voice: str, **kwargs) -> bytes:
     try:
         import edge_tts
     except ImportError:
-        raise RuntimeError("edge-tts not installed. Run: pip install edge-tts")
+        raise RuntimeError("Edge TTS 依赖未安装。请运行: pip install edge-tts")
 
     communicate = edge_tts.Communicate(text, voice)
     buf = io.BytesIO()
@@ -27,7 +27,7 @@ async def _edge_tts_synthesize(text: str, voice: str, **kwargs) -> bytes:
             buf.write(chunk["data"])
     audio = buf.getvalue()
     if not audio:
-        raise RuntimeError("Edge TTS returned empty audio")
+        raise RuntimeError("Edge TTS 返回了空音频数据，请检查文本内容和语音名称是否正确")
     return audio
 
 
@@ -43,7 +43,7 @@ async def _openai_tts_synthesize(
 ) -> bytes:
     """Synthesize using OpenAI-compatible TTS API."""
     if not api_key:
-        raise RuntimeError("API key required for OpenAI TTS provider")
+        raise RuntimeError("OpenAI TTS 需要 API 密钥。请在请求中提供 api_key 或在 mcp.json 的 services.tts.config.api_key 中配置")
 
     url = base_url.rstrip("/") + "/audio/speech"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -52,9 +52,9 @@ async def _openai_tts_synthesize(
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, headers=headers, json=payload)
         if resp.status_code != 200:
-            raise RuntimeError(f"TTS API error {resp.status_code}: {resp.text[:200]}")
+            raise RuntimeError(f"OpenAI TTS 接口返回错误 (HTTP {resp.status_code}): {resp.text[:200]}。请检查 API 密钥、模型名称和 base_url 是否正确")
         if not resp.content:
-            raise RuntimeError("TTS API returned empty audio")
+            raise RuntimeError("OpenAI TTS 接口返回了空音频数据，请检查文本内容是否过长或包含不支持的字符")
         return resp.content
 
 
@@ -71,7 +71,7 @@ async def _http_tts_synthesize(
 ) -> bytes:
     """Generic HTTP TTS provider."""
     if not url:
-        raise RuntimeError("HTTP TTS requires 'url' in config")
+        raise RuntimeError("HTTP TTS 需要在配置中指定 'url' 参数。请在 mcp.json 的 services.tts.config.url 中填写 TTS 服务地址")
 
     req_headers = {"Content-Type": "application/json"}
     if api_key:
@@ -88,7 +88,7 @@ async def _http_tts_synthesize(
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, headers=req_headers, json=body)
         if resp.status_code != 200:
-            raise RuntimeError(f"HTTP TTS error {resp.status_code}: {resp.text[:200]}")
+            raise RuntimeError(f"自定义 TTS 服务返回错误 (HTTP {resp.status_code}): {resp.text[:200]}。请检查 TTS 服务地址和参数配置是否正确")
 
         ct = resp.headers.get("content-type", "")
         if "audio" in ct or "octet-stream" in ct:
@@ -138,7 +138,7 @@ async def tts_synthesize(
     No chunking — let the provider handle long text natively.
     """
     if not text or not text.strip():
-        raise ValueError("Text cannot be empty")
+        raise ValueError("待朗读的文本不能为空")
 
     config = config or {}
     logger.info(f"TTS: provider={provider}, voice={voice}, chars={len(text)}")
@@ -165,7 +165,7 @@ async def tts_synthesize(
         )
 
     else:
-        raise ValueError(f"Unknown TTS provider: {provider}. Available: {list(PROVIDERS.keys())}")
+        raise ValueError(f"未知的 TTS 引擎: '{provider}'。可选引擎: {list(PROVIDERS.keys())}")
 
 
 # ─── Voice listing ─────────────────────────────────────────────

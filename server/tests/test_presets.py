@@ -34,46 +34,46 @@ class TestPresetAPI:
         """filesystem requires PATH — missing it should fail."""
         response = client.post("/api/presets/filesystem/install", json={})
         assert response.status_code == 400
-        assert "Missing" in response.json()["error"]
+        assert "缺少必填参数" in response.json()["error"]
 
 
 class TestDangerousPatterns:
     def test_taskkill_blocked(self):
         from tools.shell import execute_command
         result = execute_command("taskkill /F /IM python.exe")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_kill_blocked(self):
         from tools.shell import execute_command
         result = execute_command("kill -9 12345")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_pkill_blocked(self):
         from tools.shell import execute_command
         result = execute_command("pkill python")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_windows_del_blocked(self):
         from tools.shell import execute_command
         result = execute_command("del /f /s /q C:\\*")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_windows_rd_blocked(self):
         from tools.shell import execute_command
         result = execute_command("rd /s /q C:\\Users")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_windows_rmdir_blocked(self):
         from tools.shell import execute_command
         result = execute_command("rmdir /s /q C:\\")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_windows_format_blocked(self):
         from tools.shell import execute_command
         result = execute_command("format C: /fs:ntfs /q")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result
 
     def test_windows_diskpart_blocked(self):
         from tools.shell import execute_command
         result = execute_command("diskpart /s script.txt")
-        assert "Security" in result or "blocked" in result
+        assert "安全拦截" in result

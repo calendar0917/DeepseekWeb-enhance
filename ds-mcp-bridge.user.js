@@ -955,6 +955,51 @@
     }
 
     // ═══════════════════════════════════════════════════════════════
+    //  Health Check — 自动轮询 + 断线提示 + 自动重连
+    // ═══════════════════════════════════════════════════════════════
+    let _healthConnected = null; // null = unknown, true/false = last known state
+
+    async function checkConnection() {
+      const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
+      try {
+        const resp = await new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url: mcpUrl.replace('/mcp', '/health'),
+            onload: (r) => {
+              try { resolve(JSON.parse(r.responseText)); }
+              catch { reject(new Error('invalid response')); }
+            },
+            onerror: () => reject(new Error('network error')),
+            timeout: 5000,
+          });
+        });
+
+        const nowOk = resp.status === 'ok';
+        if (_healthConnected === false && nowOk) {
+          // 刚恢复连接 — 自动重新加载工具列表
+          toast('服务器已恢复连接，正在重新加载...', 'success');
+          refreshStatus();
+        } else if (_healthConnected === null && nowOk) {
+          // 首次检测到已连接
+        }
+        _healthConnected = nowOk;
+        fab.classList.toggle('disconnected', !nowOk);
+      } catch {
+        if (_healthConnected !== false) {
+          _healthConnected = false;
+          fab.classList.add('disconnected');
+          toolRegistry = [];
+          toast('服务器连接断开，请检查 MCP 服务器是否运行中', 'error');
+        }
+      }
+    }
+
+    // 首次检测 + 每 30 秒轮询
+    checkConnection();
+    setInterval(checkConnection, 30000);
+
+    // ═══════════════════════════════════════════════════════════════
     //  Tab: Test
     // ═══════════════════════════════════════════════════════════════
     const secTest = panel.querySelector('#mcp-sec-test');

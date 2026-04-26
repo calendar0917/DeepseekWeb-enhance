@@ -26,7 +26,7 @@ class TestPathValidation:
         monkeypatch.setenv("DS_WORKSPACE", str(tmp_path))
         shell.WORKSPACE_ROOT = tmp_path.resolve()
 
-        with pytest.raises(ValueError, match="outside workspace"):
+        with pytest.raises(ValueError, match="超出工作区范围"):
             shell._validate_path("../../../etc/passwd")
 
     def test_validate_path_absolute_within_workspace(self, tmp_path, monkeypatch):
@@ -67,7 +67,7 @@ class TestShellTools:
         shell.WORKSPACE_ROOT = tmp_path.resolve()
 
         result = shell.list_directory("nonexistent")
-        assert "does not exist" in result
+        assert "路径不存在" in result
 
     def test_read_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DS_WORKSPACE", str(tmp_path))
@@ -88,7 +88,7 @@ class TestShellTools:
         (tmp_path / "large.txt").write_text(large_content)
 
         result = shell.read_file("large.txt", max_bytes=1000)
-        assert "too large" in result
+        assert "文件过大" in result
 
     def test_write_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DS_WORKSPACE", str(tmp_path))
@@ -96,7 +96,7 @@ class TestShellTools:
         shell.WORKSPACE_ROOT = tmp_path.resolve()
 
         result = shell.write_file("new.txt", "test content")
-        assert "Written" in result
+        assert "已写入" in result
         assert (tmp_path / "new.txt").read_text() == "test content"
 
     def test_execute_command_whitelisted(self, tmp_path, monkeypatch):
@@ -111,15 +111,15 @@ class TestShellTools:
         shell.WORKSPACE_ROOT = tmp_path.resolve()
 
         result = shell.execute_command("rm -rf /")
-        assert "Security" in result
-        assert "dangerous pattern" in result
+        assert "安全拦截" in result
+        assert "危险操作" in result
 
 
 class TestSearchTools:
     @pytest.mark.asyncio
     async def test_bing_search_no_api_key(self):
         result = await search.bing_search("test", api_key="")
-        assert "API key not configured" in result
+        assert "未配置" in result
 
     @pytest.mark.asyncio
     async def test_bing_search_with_mock(self):
@@ -158,7 +158,7 @@ class TestSearchTools:
 
         with patch.object(httpx.AsyncClient, "get", return_value=mock_response):
             result = await search.crawl_webpage("https://example.com", max_length=1000)
-            assert "truncated" in result
+            assert "已截断" in result
 
 
 class TestToolDefinitions:

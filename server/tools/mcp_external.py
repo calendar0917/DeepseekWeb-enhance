@@ -95,8 +95,12 @@ class StdioMCPServer:
                         f"{[t['name'] for t in self._tools]}")
             return True
 
+        except FileNotFoundError:
+            logger.error(f"[{self.name}] 启动失败：找不到命令 '{self.command}'，请确认已安装对应工具")
+            await self.stop()
+            return False
         except Exception as e:
-            logger.error(f"[{self.name}] Failed to start: {e}")
+            logger.error(f"[{self.name}] 启动失败: {e}")
             await self.stop()
             return False
 
@@ -131,9 +135,9 @@ class StdioMCPServer:
     async def call_tool(self, name: str, arguments: dict) -> dict:
         """Call a tool on the external server."""
         if not self.connected:
-            return {"error": f"[{self.name}] Not connected"}
+            return {"error": f"[{self.name}] 未连接 — 服务器进程可能已退出，请尝试重新启动"}
         result = await self._rpc("tools/call", {"name": name, "arguments": arguments})
-        return result or {"error": f"[{self.name}] No response"}
+        return result or {"error": f"[{self.name}] 调用工具 '{name}' 无响应 — 服务器可能已卡死，请重启该 MCP 服务器"}
 
     @property
     def tools(self) -> list[dict]:
@@ -153,18 +157,18 @@ class StdioMCPServer:
             await self._proc.stdin.drain()
         except Exception as e:
             self._pending.pop(msg_id, None)
-            logger.error(f"[{self.name}] Write error: {e}")
+            logger.error(f"[{self.name}] 写入失败: {e}")
             return None
 
         try:
             result = await asyncio.wait_for(future, timeout=30)
             if "error" in result:
-                logger.error(f"[{self.name}] RPC error: {result['error']}")
+                logger.error(f"[{self.name}] RPC 错误: {result['error']}")
                 return None
             return result.get("result")
         except asyncio.TimeoutError:
             self._pending.pop(msg_id, None)
-            logger.error(f"[{self.name}] RPC timeout: {method}")
+            logger.error(f"[{self.name}] RPC 超时 ({method}) — 服务器响应超过 30 秒")
             return None
 
     async def _notify(self, method: str, params: dict):
@@ -183,7 +187,7 @@ class StdioMCPServer:
             while True:
                 line = await self._proc.stdout.readline()
                 if not line:
-                    logger.info(f"[{self.name}] Process exited")
+                    logger.warning(f"[{self.name}] 进程已退出 — 如需使用请重启该 MCP 服务器")
                     self.connected = False
                     break
                 try:
@@ -239,7 +243,7 @@ class HTTPMCPServer:
             return True
 
         except Exception as e:
-            logger.error(f"[{self.name}] Failed to connect: {e}")
+            logger.error(f"[{self.name}] 连接失败: {e}。请检查 URL 是否正确以及目标服务是否已启动")
             await self.stop()
             return False
 
@@ -253,9 +257,9 @@ class HTTPMCPServer:
     async def call_tool(self, name: str, arguments: dict) -> dict:
         """Call a tool on the external server."""
         if not self.connected:
-            return {"error": f"[{self.name}] Not connected"}
+            return {"error": f"[{self.name}] 未连接 — HTTP 服务可能不可用，请检查服务地址"}
         result = await self._rpc("tools/call", {"name": name, "arguments": arguments})
-        return result or {"error": f"[{self.name}] No response"}
+        return result or {"error": f"[{self.name}] 调用工具 '{name}' 无响应 — 服务可能已超时或断开"}
 
     @property
     def tools(self) -> list[dict]:
@@ -296,11 +300,11 @@ class HTTPMCPServer:
             if resp is None:
                 return None
             if "error" in resp:
-                logger.error(f"[{self.name}] RPC error: {resp['error']}")
+                logger.error(f"[{self.name}] RPC 错误: {resp['error']}")
                 return None
             return resp.get("result")
         except Exception as e:
-            logger.error(f"[{self.name}] RPC error: {e}")
+            logger.error(f"[{self.name}] RPC 调用失败: {e}")
             return None
 
     async def _notify(self, method: str, params: dict):
@@ -309,7 +313,7 @@ class HTTPMCPServer:
         try:
             await self._post(msg)
         except Exception as e:
-            logger.error(f"[{self.name}] Notify error: {e}")
+            logger.error(f"[{self.name}] 通知发送失败: {e}")
 
 
 # ─── Proxy Manager ─────────────────────────────────────────────
@@ -366,7 +370,7 @@ class ExternalMCPProxy:
                 headers=cfg.get("headers", {}),
             )
         else:
-            logger.warning(f"[{name}] Invalid config — need 'command' (stdio) or 'url' (http)")
+            logger.warning(f"[{name}] 配置格式错误 — 需要 'command'（stdio 模式）或 'url'（HTTP 模式）")
             return False
 
         ok = await server.start()
@@ -376,8 +380,8 @@ class ExternalMCPProxy:
             for tool in server.tools:
                 tname = tool["name"]
                 if tname in self._tool_to_server:
-                    logger.warning(f"[{name}] Tool '{tname}' conflicts with "
-                                   f"'{self._tool_to_server[tname]}' — skipped")
+                    logger.warning(f"[{name}] 工具名冲突: '{tname}' 已被 "
+                                   f"'{self._tool_to_server[tname]}' 注册，已跳过")
                     continue
                 self._tool_to_server[tname] = name
             return True
@@ -394,13 +398,13 @@ class ExternalMCPProxy:
     async def add_server(self, name: str, cfg: dict) -> dict:
         """Add and start a new external server at runtime. Returns status dict."""
         if name in self._configs:
-            return {"ok": False, "error": f"Server '{name}' already exists. Remove it first."}
+            return {"ok": False, "error": f"服务器 '{name}' 已存在，请先删除后再添加"}
 
         self._configs[name] = cfg
         ok = await self._start_server(name, cfg)
         if not ok:
             self._configs.pop(name, None)
-            return {"ok": False, "error": f"Failed to start server '{name}'"}
+            return {"ok": False, "error": f"启动服务器 '{name}' 失败。请检查配置：stdio 模式需要正确的 command 和 args，HTTP 模式需要正确的 url"}
 
         self._save_persistent_config()
         return {"ok": True, "tools": [t["name"] for t in self._servers[name].tools]}
@@ -408,7 +412,7 @@ class ExternalMCPProxy:
     async def remove_server(self, name: str) -> dict:
         """Stop and remove an external server."""
         if name not in self._configs:
-            return {"ok": False, "error": f"Server '{name}' not found"}
+            return {"ok": False, "error": f"未找到服务器 '{name}'，请确认名称是否正确"}
 
         # Stop if running
         if name in self._servers:
@@ -424,19 +428,19 @@ class ExternalMCPProxy:
     async def start_server(self, name: str) -> dict:
         """Start a stopped server."""
         if name not in self._configs:
-            return {"ok": False, "error": f"Server '{name}' not found"}
+            return {"ok": False, "error": f"未找到服务器 '{name}'，请确认名称是否正确"}
         if name in self._servers and self._servers[name].connected:
-            return {"ok": False, "error": f"Server '{name}' already running"}
+            return {"ok": False, "error": f"服务器 '{name}' 已在运行中"}
 
         ok = await self._start_server(name, self._configs[name])
         if not ok:
-            return {"ok": False, "error": f"Failed to start server '{name}'"}
+            return {"ok": False, "error": f"启动服务器 '{name}' 失败，请检查配置和依赖是否正确"}
         return {"ok": True, "tools": [t["name"] for t in self._servers[name].tools]}
 
     async def stop_server(self, name: str) -> dict:
         """Stop a running server without removing config."""
         if name not in self._configs:
-            return {"ok": False, "error": f"Server '{name}' not found"}
+            return {"ok": False, "error": f"未找到服务器 '{name}'，请确认名称是否正确"}
 
         if name in self._servers:
             await self._servers[name].stop()
@@ -459,7 +463,7 @@ class ExternalMCPProxy:
         return safe
 
     def _save_persistent_config(self):
-        """Write current mcpServers config back to mcp.json."""
+        """Write current mcpServers config back to mcp.json (atomic write)."""
         if not self._config_path:
             return
         try:
@@ -469,10 +473,20 @@ class ExternalMCPProxy:
             data = {}
 
         data["mcpServers"] = self._configs
-        with open(self._config_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write('\n')
-        logger.info(f"Saved external server config to {self._config_path}")
+        tmp_path = self._config_path.with_suffix('.tmp')
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write('\n')
+            tmp_path.replace(self._config_path)
+            logger.info(f"配置已保存到 {self._config_path}")
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
+            # Clean up temp file if it exists
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     async def stop_all(self):
         """Stop all external servers."""
@@ -498,7 +512,7 @@ class ExternalMCPProxy:
         """Route tool call to the correct server."""
         server_name = self._tool_to_server.get(tool_name)
         if not server_name or server_name not in self._servers:
-            return {"error": f"External tool '{tool_name}' not found"}
+            return {"error": f"外部工具 '{tool_name}' 未找到 — 对应的 MCP 服务器可能未启动或已被移除"}
         return await self._servers[server_name].call_tool(tool_name, arguments)
 
     def get_status(self) -> list[dict]:

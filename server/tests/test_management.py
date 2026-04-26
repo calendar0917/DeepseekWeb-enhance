@@ -27,7 +27,7 @@ class TestExternalServerManagementAPI:
     def test_add_missing_name(self, client):
         response = client.post("/api/external-servers", json={"command": "echo"})
         assert response.status_code == 400
-        assert "Missing" in response.json()["error"]
+        assert "缺少" in response.json()["error"]
 
     def test_add_invalid_json(self, client):
         response = client.post("/api/external-servers",

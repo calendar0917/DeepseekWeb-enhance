@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 async def bing_search(query: str, count: int = 10, offset: int = 0, api_key: str = "") -> str:
     """Search Bing and return results as text."""
     if not api_key:
-        return "Error: Bing API key not configured. Set bing_api_key in mcp.json."
+        return "错误：未配置 Bing 搜索 API 密钥。请在 mcp.json 的 services.web_search.config.bing_api_key 中填入 API Key"
 
     url = "https://api.bing.microsoft.com/v7.0/search"
     headers = {"Ocp-Apim-Subscription-Key": api_key}
@@ -25,7 +25,7 @@ async def bing_search(query: str, count: int = 10, offset: int = 0, api_key: str
 
         results = data.get("webPages", {}).get("value", [])
         if not results:
-            return "No results found."
+            return "搜索无结果。请尝试调整关键词后重试"
 
         lines: list[str] = []
         for i, r in enumerate(results, offset + 1):
@@ -36,7 +36,7 @@ async def bing_search(query: str, count: int = 10, offset: int = 0, api_key: str
 
         return "\n".join(lines)
     except httpx.HTTPError as e:
-        return f"Search error: {e}"
+        return f"搜索请求失败: {e}。请检查网络连接和 API 密钥是否正确"
 
 
 async def crawl_webpage(url: str, max_length: int = 10000) -> str:
@@ -55,34 +55,34 @@ async def crawl_webpage(url: str, max_length: int = 10000) -> str:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         text = "\n".join(lines)
         if len(text) > max_length:
-            text = text[:max_length] + f"\n\n... (truncated, {len(text):,} total characters)"
+            text = text[:max_length] + f"\n\n... (已截断，原文共 {len(text):,} 个字符)"
         return text
     except Exception as e:
-        return f"Crawl error: {e}"
+        return f"网页抓取失败: {e}。目标页面可能无法访问或响应超时"
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "bing_search",
-        "description": "Search the web using Bing",
+        "description": "使用 Bing 搜索网页内容",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query"},
-                "count": {"type": "integer", "description": "Number of results (default 10, max 50)"},
-                "offset": {"type": "integer", "description": "Pagination offset (default 0)"},
+                "query": {"type": "string", "description": "搜索关键词"},
+                "count": {"type": "integer", "description": "返回结果数量（默认 10，最大 50）"},
+                "offset": {"type": "integer", "description": "分页偏移量（默认 0）"},
             },
             "required": ["query"],
         },
     },
     {
         "name": "crawl_webpage",
-        "description": "Fetch and extract text content from a web page",
+        "description": "抓取网页并提取纯文本内容",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "URL to fetch"},
-                "max_length": {"type": "integer", "description": "Max characters to return (default 10000)"},
+                "url": {"type": "string", "description": "要抓取的网页 URL"},
+                "max_length": {"type": "integer", "description": "最大返回字符数（默认 10000）"},
             },
             "required": ["url"],
         },
