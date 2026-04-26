@@ -7,15 +7,38 @@
     "local_shell": {
       "description": "本地文件和命令操作",
       "type": "builtin",
-      "tools": ["execute_command", "get_cwd", "list_directory", "read_file", "write_file"]
+      "tools": [
+        "execute_command",
+        "get_cwd",
+        "list_directory",
+        "read_file",
+        "write_file"
+      ]
     },
     "web_search": {
       "description": "网络搜索",
       "type": "builtin",
-      "tools": ["bing_search", "crawl_webpage"],
+      "tools": [
+        "bing_search",
+        "crawl_webpage"
+      ],
       "config": {
         "bing_api_key": ""
       }
+    }
+  },
+  "mcpServers": {
+    "exa_search-mcp": {
+      "type": "http",
+      "url": "https://mcp.exa.ai/mcp?exaApiKey=88ffe96a-22c2-4eb5-8da9-b01e0d2a58d0&tools=web_search_exa,web_search_advanced_exa,crawling_exa,company_research_exa,deep_researcher_start,deep_researcher_check,deep_search_exa"
+    },
+    "context7": {
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "command": "npx",
+      "type": "stdio"
     }
   }
 }

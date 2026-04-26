@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] - 2026-04-26
+
+### Added
+- 外部 MCP 服务器支持：在 `mcp.json` 的 `mcpServers` 中配置第三方 MCP 服务器
+  - stdio 传输：启动子进程（如 `npx @modelcontextprotocol/server-github`）
+  - HTTP 传输：连接远程 MCP 服务器（支持 SSE）
+  - 工具自动合并，DeepSeek 可直接调用外部工具
+  - 服务器生命周期管理（启动、关闭、健康检查）
+- `/health` 端点新增 `builtin_tools`、`external_tools`、`external_servers` 字段
+
 ## [3.1.0] - 2025-04-25
 
 ### Added

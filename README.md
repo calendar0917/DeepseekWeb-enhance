@@ -101,6 +101,38 @@ python server.py
 | `bing_search` | Bing 搜索（需配置 API Key） |
 | `crawl_webpage` | 抓取网页内容 |
 
+### 外部 MCP 服务器
+
+除了内置工具，还可以接入任意外部 MCP 服务器。在 `server/mcp.json` 的 `mcpServers` 中配置即可：
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_xxx" }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+    },
+    "my-remote": {
+      "url": "http://192.168.1.100:3000/mcp"
+    }
+  }
+}
+```
+
+支持两种传输方式：
+
+| 传输方式 | 配置字段 | 说明 |
+|---------|---------|------|
+| **stdio** | `command` + `args` + `env` | 启动子进程，通过 stdin/stdout 通信（最常用） |
+| **HTTP** | `url` + `headers` | 连接远程 MCP 服务器（支持 SSE） |
+
+外部服务器的工具会自动合并到工具列表中，DeepSeek 可直接调用。
+
 ### 工具调用方式
 
 在对话中让 DeepSeek 输出特定格式即可触发工具调用：
@@ -128,7 +160,8 @@ ds-enhance/
 │   ├── mcp.json            # 工具配置
 │   └── tools/
 │       ├── shell.py        # 本地文件和命令操作工具
-│       └── search.py       # 网络搜索和网页抓取工具
+│       ├── search.py       # 网络搜索和网页抓取工具
+│       └── mcp_external.py # 外部 MCP 服务器代理
 ├── README.md
 ├── CHANGELOG.md
 └── LICENSE
@@ -153,7 +186,7 @@ ds-enhance/
 - [x] 工具调用检测（正则 + flex match 双策略）
 - [x] 工具调用结果自动注入对话
 - [ ] 工具白名单/黑名单
-- [ ] 支持外部 MCP 服务器（stdio 传输）
+- [x] 支持外部 MCP 服务器（stdio/HTTP 传输）
 
 ## License
 

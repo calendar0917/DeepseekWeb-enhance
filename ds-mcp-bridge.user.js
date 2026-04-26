@@ -526,6 +526,23 @@
     .mcp-status{font-size:13px;padding:8px 0}
     .mcp-status .ok{color:#4ade80}
     .mcp-status .err{color:#f87171}
+
+    .ext-card{padding:10px 12px;border:1px solid #333;border-radius:10px;margin-bottom:8px;background:#1a1a28}
+    .ext-card-hd{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .ext-card-name{font-weight:600;color:#7aa2f7;font-size:14px}
+    .ext-card-transport{font-size:11px;color:#666;background:#222;padding:2px 6px;border-radius:4px}
+    .ext-card-status{font-size:12px;display:flex;align-items:center;gap:4px}
+    .ext-card-status .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+    .ext-card-status .dot-green{background:#4ade80}.ext-card-status .dot-red{background:#f87171}.ext-card-status .dot-gray{background:#666}
+    .ext-card-tools{font-size:11px;color:#888;margin-top:6px}
+    .ext-card-actions{display:flex;gap:6px;margin-top:8px}
+    .ext-card-actions .mcp-btn{font-size:11px;padding:4px 10px}
+    .ext-form-row{margin-bottom:8px}
+    .ext-form-row label{font-size:11px;color:#888;display:block;margin-bottom:3px}
+    .ext-form-row input{font-size:12px}
+    .ext-add-toggle{font-size:12px;color:#7aa2f7;cursor:pointer;border:none;background:none;padding:0;margin-top:6px}
+    .ext-add-toggle:hover{text-decoration:underline}
+    .ext-section{margin-top:10px;padding-top:10px;border-top:1px solid #2a2a3a}
   `;
 
   // ═══════════════════════════════════════════════════════════════
@@ -556,17 +573,19 @@
     panel.id = 'mcp-panel';
     panel.innerHTML = `
       <div class="hd">
-        <h3>DS MCP Bridge <span class="ver">v3.0.0</span></h3>
+        <h3>DS MCP Bridge <span class="ver">v2.0.0</span></h3>
         <button class="cls">&times;</button>
       </div>
       <div id="mcp-tabs">
         <button class="active" data-tab="status">状态</button>
         <button data-tab="test">测试</button>
+        <button data-tab="ext">MCP 服务器</button>
         <button data-tab="settings">设置</button>
       </div>
       <div class="mcp-bd">
         <div class="mcp-sec active" id="mcp-sec-status"></div>
         <div class="mcp-sec" id="mcp-sec-test"></div>
+        <div class="mcp-sec" id="mcp-sec-ext"></div>
         <div class="mcp-sec" id="mcp-sec-settings"></div>
       </div>
     `;
@@ -664,27 +683,66 @@
         return;
       }
 
+      // Fetch health info for external server status
+      let healthInfo = null;
+      try {
+        const resp = await new Promise((resolve, reject) => {
+          GM_xmlhttpRequest({
+            method: 'GET', url: mcpUrl.replace('/mcp', '/health'),
+            onload: (r) => resolve(JSON.parse(r.responseText)),
+            onerror: (e) => reject(e), timeout: 5000,
+          });
+        });
+        healthInfo = resp;
+      } catch {}
+
       const tools = await client.listTools();
       toolRegistry = tools;
       fab.classList.remove('disconnected');
+
+      // Separate builtin vs external tools
+      const extServers = healthInfo?.external_servers || [];
+      const extToolNames = new Set();
+      extServers.forEach(s => s.tools?.forEach(t => extToolNames.add(t)));
 
       let toolList = '';
       tools.forEach(t => {
         const desc = t.description || '';
         const req = t.inputSchema?.required;
         const params = req?.length ? ` (${req.join(', ')})` : '';
-        toolList += `<div class="mcp-tool"><span class="name">${esc(t.name)}${esc(params)}</span><span class="desc">${esc(desc)}</span></div>`;
+        const badge = extToolNames.has(t.name)
+          ? '<span style="font-size:10px;color:#f0ad4e;margin-left:4px">ext</span>' : '';
+        toolList += `<div class="mcp-tool"><span class="name">${esc(t.name)}${esc(params)}${badge}</span><span class="desc">${esc(desc)}</span></div>`;
       });
 
+      // External servers info
+      let extInfo = '';
+      if (extServers.length > 0) {
+        extInfo = '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2a3a">';
+        extInfo += '<div style="font-size:12px;color:#888;margin-bottom:6px">外部 MCP 服务器</div>';
+        extServers.forEach(s => {
+          const icon = s.connected ? '&#10003;' : '&#10007;';
+          const color = s.connected ? '#4ade80' : '#f87171';
+          extInfo += `<div style="font-size:12px;color:#aaa;margin-bottom:4px"><span style="color:${color}">${icon}</span> <strong>${esc(s.name)}</strong> (${s.transport}) — ${s.tools?.length || 0} tools</div>`;
+        });
+        extInfo += '</div>';
+      }
+
+      const builtinCount = tools.length - extToolNames.size;
+      const summary = extServers.length > 0
+        ? `${tools.length} 个工具 (${builtinCount} 内置 + ${extToolNames.size} 外部)`
+        : `${tools.length} 个工具`;
+
       secStatus.innerHTML = `
-        <div class="mcp-status"><span class="ok">已连接</span> — ${tools.length} 个工具</div>
+        <div class="mcp-status"><span class="ok">已连接</span> — ${summary}</div>
+        ${extInfo}
         <div style="margin-top:8px">${toolList || '<div style="color:#665">无可用工具</div>'}</div>
         <div style="margin-top:12px">
           <button class="mcp-btn pri" id="mcp-refresh">刷新</button>
         </div>
       `;
       secStatus.querySelector('#mcp-refresh').onclick = refreshStatus;
-      console.log(`${SCRIPT_PREFIX} v3.0.0 ready — ${tools.length} tools registered`);
+      console.log(`${SCRIPT_PREFIX} ready — ${tools.length} tools (${extToolNames.size} external)`);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -768,8 +826,244 @@
 
     // Watch for tab switch to render test tab
     panel.querySelectorAll('#mcp-tabs button').forEach(btn => {
-      btn.addEventListener('click', () => { if (btn.dataset.tab === 'test') renderTestTab(); });
+      btn.addEventListener('click', () => {
+        if (btn.dataset.tab === 'test') renderTestTab();
+        if (btn.dataset.tab === 'ext') renderExtTab();
+      });
     });
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Tab: External MCP Servers
+    // ═══════════════════════════════════════════════════════════════
+    const secExt = panel.querySelector('#mcp-sec-ext');
+
+    function getBaseUrl() {
+      const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
+      // Extract origin from any MCP URL: http://host:port/mcp → http://host:port
+      try {
+        const u = new URL(mcpUrl);
+        return u.origin;
+      } catch {
+        // Fallback: strip last path segment
+        return mcpUrl.replace(/\/[^/]*$/, '');
+      }
+    }
+
+    function extApiUrl(path) {
+      return getBaseUrl() + path;
+    }
+
+    async function extApiCall(path, method = 'GET', body) {
+      const url = extApiUrl(path);
+      return new Promise((resolve, reject) => {
+        const opts = {
+          method, url, timeout: 15000,
+          headers: { 'Content-Type': 'application/json' },
+          onload: (r) => {
+            try { resolve(JSON.parse(r.responseText)); }
+            catch { reject(new Error('Invalid JSON')); }
+          },
+          onerror: (e) => reject(new Error(e.error || 'Network error')),
+          ontimeout: () => reject(new Error('Timeout')),
+        };
+        if (body) opts.data = JSON.stringify(body);
+        GM_xmlhttpRequest(opts);
+      });
+    }
+
+    let extFormOpen = false;
+
+    async function renderExtTab() {
+      secExt.innerHTML = '<div style="color:#888;font-size:13px">加载中...</div>';
+
+      let data;
+      try {
+        data = await extApiCall('/api/external-servers');
+      } catch (e) {
+        secExt.innerHTML = `<div style="color:#f87171;font-size:13px">连接失败: ${esc(e.message)}</div>`;
+        return;
+      }
+
+      const servers = data.servers || [];
+      let html = '';
+
+      // Server list
+      if (servers.length === 0) {
+        html += '<div style="color:#666;font-size:13px;margin-bottom:10px">暂无外部 MCP 服务器</div>';
+      } else {
+        servers.forEach(s => {
+          const dotClass = s.status === 'running' ? 'dot-green' : s.status === 'stopped' ? 'dot-gray' : 'dot-red';
+          const statusText = s.status === 'running' ? '运行中' : s.status === 'stopped' ? '已停止' : '异常';
+          const statusColor = s.status === 'running' ? '#4ade80' : s.status === 'stopped' ? '#888' : '#f87171';
+          const toolsStr = s.tools?.length ? s.tools.join(', ') : '—';
+
+          let actions = '';
+          if (s.status === 'running') {
+            actions = `<button class="mcp-btn ext-stop" data-name="${esc(s.name)}">停止</button>`;
+          } else {
+            actions = `<button class="mcp-btn pri ext-start" data-name="${esc(s.name)}">启动</button>`;
+          }
+          actions += `<button class="mcp-btn ext-remove" data-name="${esc(s.name)}" style="color:#f87171;border-color:#f87171">删除</button>`;
+
+          html += `
+            <div class="ext-card">
+              <div class="ext-card-hd">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="ext-card-name">${esc(s.name)}</span>
+                  <span class="ext-card-transport">${s.transport}</span>
+                </div>
+                <span class="ext-card-status"><span class="dot ${dotClass}"></span><span style="color:${statusColor}">${statusText}</span></span>
+              </div>
+              <div class="ext-card-tools">工具: ${esc(toolsStr)}</div>
+              <div class="ext-card-actions">${actions}</div>
+            </div>
+          `;
+        });
+      }
+
+      // Add form — JSON import
+      const defaultJson = JSON.stringify({
+        "mcpServers": {
+          "context7": {
+            "command": "npx",
+            "args": ["-y", "@upstash/context7-mcp"]
+          },
+          "fetch": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-fetch"]
+          }
+        }
+      }, null, 2);
+
+      html += `<button class="ext-add-toggle" id="ext-add-btn">+ 导入 JSON 配置</button>`;
+      html += `<div id="ext-add-form" style="display:${extFormOpen ? 'block' : 'none'};margin-top:8px">`;
+      html += `
+        <div style="font-size:11px;color:#888;margin-bottom:6px">
+          支持粘贴任意格式的 MCP 配置 JSON，可同时导入多个（如 Claude Desktop、MCP Inspector 配置）
+        </div>
+        <textarea id="ext-f-json" style="width:100%;height:180px;padding:8px;border-radius:8px;border:1px solid #444;background:#0d0d18;color:#a0a0c0;font-size:11px;font-family:monospace;resize:vertical;box-sizing:border-box;outline:none;line-height:1.4" spellcheck="false">${esc(defaultJson)}</textarea>
+        <div style="margin-top:8px;display:flex;gap:6px">
+          <button class="mcp-btn pri" id="ext-add-submit">导入并启动</button>
+          <button class="mcp-btn" id="ext-add-cancel">取消</button>
+        </div>
+      </div>`;
+
+      html += `
+        <div style="margin-top:12px">
+          <button class="mcp-btn" id="ext-refresh">刷新</button>
+        </div>
+      `;
+
+      secExt.innerHTML = html;
+
+      // ── Event bindings ──
+
+      // Add form toggle
+      secExt.querySelector('#ext-add-btn').onclick = () => {
+        extFormOpen = !extFormOpen;
+        secExt.querySelector('#ext-add-form').style.display = extFormOpen ? 'block' : 'none';
+      };
+
+      // Cancel
+      secExt.querySelector('#ext-add-cancel').onclick = () => {
+        extFormOpen = false;
+        secExt.querySelector('#ext-add-form').style.display = 'none';
+      };
+
+      // Submit JSON import
+      secExt.querySelector('#ext-add-submit').onclick = async () => {
+        const raw = secExt.querySelector('#ext-f-json').value.trim();
+        if (!raw) { toast('请粘贴 JSON 配置', 'error'); return; }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (e) {
+          toast(`JSON 解析失败: ${e.message}`, 'error');
+          return;
+        }
+
+        // Normalize into {name: config} map — auto-unwrap common wrappers
+        let entries;
+
+        // Unwrap mcpServers / servers wrapper (Claude Desktop / common formats)
+        if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+          parsed = parsed.mcpServers;
+        } else if (parsed.servers && typeof parsed.servers === 'object') {
+          parsed = parsed.servers;
+        }
+
+        if (parsed.name && typeof parsed.name === 'string') {
+          // Single server object with name field: {name, command, ...}
+          const { name, ...cfg } = parsed;
+          entries = { [name]: cfg };
+        } else if (parsed.command || parsed.url) {
+          // Single server without name — ask for it
+          toast('缺少 name 字段，请用 {"name": "xxx", ...} 格式', 'error');
+          return;
+        } else {
+          // Assume {serverName: config, ...}
+          entries = parsed;
+        }
+
+        // Send as single batch request
+        try {
+          const result = await extApiCall('/api/external-servers', 'POST', { mcpServers: entries });
+          let added = 0, errors = [];
+          for (const r of (result.results || [])) {
+            if (r.ok) added++;
+            else errors.push(`${r.name}: ${r.error || '未知错误'}`);
+          }
+          if (added > 0) {
+            toast(`已添加 ${added} 个服务器`, 'success');
+            extFormOpen = false;
+            renderExtTab();
+            refreshStatus();
+          }
+          errors.forEach(e => toast(e, 'error'));
+        } catch (e) {
+          toast(`请求失败: ${e.message || '网络错误'}`, 'error');
+        }
+      };
+
+      // Start/Stop/Remove
+      secExt.querySelectorAll('.ext-start').forEach(btn => {
+        btn.onclick = async () => {
+          const name = btn.dataset.name;
+          try {
+            const result = await extApiCall(`/api/external-servers/${name}/start`, 'POST');
+            toast(result.ok ? `${name} 已启动` : result.error, result.ok ? 'success' : 'error');
+            renderExtTab(); refreshStatus();
+          } catch (e) { toast(e.message, 'error'); }
+        };
+      });
+
+      secExt.querySelectorAll('.ext-stop').forEach(btn => {
+        btn.onclick = async () => {
+          const name = btn.dataset.name;
+          try {
+            const result = await extApiCall(`/api/external-servers/${name}/stop`, 'POST');
+            toast(result.ok ? `${name} 已停止` : result.error, result.ok ? 'success' : 'error');
+            renderExtTab(); refreshStatus();
+          } catch (e) { toast(e.message, 'error'); }
+        };
+      });
+
+      secExt.querySelectorAll('.ext-remove').forEach(btn => {
+        btn.onclick = async () => {
+          const name = btn.dataset.name;
+          if (!confirm(`确定删除 ${name}？`)) return;
+          try {
+            const result = await extApiCall(`/api/external-servers/${name}`, 'DELETE');
+            toast(result.ok ? `${name} 已删除` : result.error, result.ok ? 'success' : 'error');
+            renderExtTab(); refreshStatus();
+          } catch (e) { toast(e.message, 'error'); }
+        };
+      });
+
+      // Refresh
+      secExt.querySelector('#ext-refresh').onclick = renderExtTab;
+    }
 
     // ═══════════════════════════════════════════════════════════════
     //  Tab: Settings
