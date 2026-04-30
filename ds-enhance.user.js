@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DS Enhance
 // @namespace    https://github.com/calendar0917/ds-enhance
-// @version      3.1.0
-// @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名、提示词注入
+// @version      3.2.0
+// @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名、多提示词注入
 // @author       ds-enhance
 // @match        https://chat.deepseek.com/*
 // @grant        none
@@ -14,19 +14,32 @@
 
   const API = 'https://chat.deepseek.com/api/v0';
   const LS_CATS = 'dse_categories';
-  const LS_PROMPT = 'dse_custom_prompt';
+  const LS_PROMPT = 'dse_custom_prompt';     // legacy single-prompt key (migration)
+  const LS_PROMPTS = 'dse_prompts';           // multi-prompt: [{id, name, content, enabled}]
   const CUSTOM_PROMPT_MARKER = '[自定义提示词]';
 
   // ═══════════════════════════════════════════════════════════════════
   //  Prompt Injection (runs at document-start, before page scripts)
   // ═══════════════════════════════════════════════════════════════════
+  function getEnabledPrompts() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(LS_PROMPTS) || '[]');
+      if (Array.isArray(arr) && arr.length) {
+        return arr.filter(p => p.enabled).map(p => p.content).filter(Boolean);
+      }
+    } catch { /* corrupt */ }
+    // legacy fallback
+    const single = (localStorage.getItem(LS_PROMPT) || '').trim();
+    return single ? [single] : [];
+  }
+
   function modifyRequest(bodyStr) {
-    const customPrompt = (localStorage.getItem(LS_PROMPT) || '').trim();
-    if (!customPrompt || !bodyStr) return bodyStr;
+    const enabled = getEnabledPrompts();
+    if (!enabled.length || !bodyStr) return bodyStr;
     if (bodyStr.includes(CUSTOM_PROMPT_MARKER)) return bodyStr;
     try {
       const parsed = JSON.parse(bodyStr);
-      const tagged = `${CUSTOM_PROMPT_MARKER}\n${customPrompt}`;
+      const tagged = `${CUSTOM_PROMPT_MARKER}\n${enabled.join('\n\n')}`;
       if (parsed.prompt && typeof parsed.prompt === 'string') {
         parsed.prompt = tagged + '\n\n' + parsed.prompt;
         return JSON.stringify(parsed);
@@ -210,12 +223,12 @@
 
     #dse-panel{position:fixed;z-index:999998;width:460px;max-height:75vh;background:#16161e;color:#eee;border:1px solid #333;border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.6);font-family:system-ui;font-size:14px;display:none;flex-direction:column;overflow:hidden}
     #dse-panel.open{display:flex}
-    #dse-panel .hd{padding:14px 18px;border-bottom:1px solid #2a2a3a;display:flex;align-items:center;justify-content:space-between}
+    #dse-panel .hd{padding:14px 18px;border-bottom:1px solid #2a2a3a;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
     #dse-panel .hd h3{margin:0;font-size:15px;font-weight:600}
     #dse-panel .hd .cls{background:none;border:none;color:#888;font-size:20px;cursor:pointer;padding:0 4px}
     #dse-panel .hd .cls:hover{color:#fff}
 
-    #dse-tabs{display:flex;border-bottom:1px solid #2a2a3a;overflow-x:auto;scrollbar-width:none}
+    #dse-tabs{display:flex;border-bottom:1px solid #2a2a3a;overflow-x:auto;scrollbar-width:none;flex-shrink:0}
     #dse-tabs::-webkit-scrollbar{display:none}
     #dse-tabs button{flex:0 0 auto;padding:9px 14px;background:none;border:none;color:#888;font-size:12px;cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;white-space:nowrap}
     #dse-tabs button.active{color:#7aa2f7;border-bottom-color:#7aa2f7}
@@ -291,6 +304,27 @@
     .dse-rename-preview .old{color:#888;text-decoration:line-through}
     .dse-rename-preview .arrow{color:#555;margin:0 6px}
     .dse-rename-preview .new{color:#7aa2f7}
+
+    /* prompt cards */
+    .dse-pcard{background:#1a1a28;border:1px solid #333;border-radius:10px;padding:10px 12px;margin-bottom:8px;transition:border-color .15s}
+    .dse-pcard.disabled{opacity:.5}
+    .dse-pcard-hd{display:flex;align-items:center;gap:8px}
+    .dse-pcard-hd .pname{flex:1;font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dse-pcard-hd .pname[contenteditable]{outline:1px solid #7aa2f7;border-radius:4px;padding:0 4px}
+    .dse-pcard-hd .btn-pc{background:none;border:none;color:#888;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px}
+    .dse-pcard-hd .btn-pc:hover{color:#eee;background:#333}
+    .dse-pcard-hd .btn-pc.dng:hover{color:#f87171;background:#3b1111}
+    .dse-pcard-toggle{position:relative;width:32px;height:18px;flex-shrink:0}
+    .dse-pcard-toggle input{opacity:0;width:0;height:0;position:absolute}
+    .dse-pcard-toggle .slider{position:absolute;inset:0;background:#444;border-radius:9px;cursor:pointer;transition:background .2s}
+    .dse-pcard-toggle .slider::before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:transform .2s}
+    .dse-pcard-toggle input:checked+.slider{background:#2563eb}
+    .dse-pcard-toggle input:checked+.slider::before{transform:translateX(14px)}
+    .dse-pcard-body{display:none;margin-top:8px}
+    .dse-pcard-body.open{display:block}
+    .dse-pcard-body textarea{width:100%;padding:8px;border-radius:8px;border:1px solid #444;background:#16161e;color:#eee;font-size:12px;resize:vertical;min-height:60px;box-sizing:border-box;outline:none}
+    .dse-pcard-body textarea:focus{border-color:#7aa2f7}
+    .dse-pcard-body .pfoot{display:flex;justify-content:flex-end;gap:6px;margin-top:6px}
   `;
   document.head.appendChild(style);
 
@@ -471,13 +505,12 @@
 
       <!-- prompt injection -->
       <div id="sec-prompt" class="dse-section">
-        <div style="color:#aaa;font-size:13px;margin-bottom:8px">自定义系统提示词（每次对话自动注入）</div>
-        <textarea id="prompt-text" class="dse-input" rows="6" placeholder="例如：你是一个严谨的技术助手，回答请用中文，输出格式用 Markdown。" style="resize:vertical;min-height:100px"></textarea>
-        <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
-          <button id="prompt-save" class="pri">保存</button>
-          <button id="prompt-clear">清除</button>
-          <span id="prompt-status" style="font-size:12px;color:#666"></span>
+        <div style="color:#aaa;font-size:13px;margin-bottom:8px">自定义系统提示词（每次对话自动注入，可保存多条）</div>
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <input type="text" id="prompt-name" class="dse-input" placeholder="提示词名称（如：翻译助手）" style="flex:1">
+          <button id="prompt-add" class="pri">添加</button>
         </div>
+        <div id="prompt-list"></div>
       </div>
 
     </div>
@@ -1039,26 +1072,119 @@
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  //  Prompt Tab
+  //  Prompt Tab (multi-prompt)
   // ═══════════════════════════════════════════════════════════════════
-  const promptText = panel.querySelector('#prompt-text');
-  const promptStatus = panel.querySelector('#prompt-status');
-  promptText.value = localStorage.getItem(LS_PROMPT) || '';
+  const promptListEl = panel.querySelector('#prompt-list');
+  const promptNameInput = panel.querySelector('#prompt-name');
 
-  panel.querySelector('#prompt-save').onclick = () => {
-    const val = promptText.value.trim();
-    localStorage.setItem(LS_PROMPT, val);
-    if (val) { promptStatus.textContent = '已保存，下次对话生效'; toast('提示词已保存', 'success'); }
-    else { promptStatus.textContent = '已清除'; toast('提示词已清除', 'info'); }
-  };
-  panel.querySelector('#prompt-clear').onclick = () => {
-    promptText.value = '';
-    localStorage.removeItem(LS_PROMPT);
-    promptStatus.textContent = '已清除';
-    toast('提示词已清除', 'info');
+  function loadPrompts() {
+    let arr;
+    try { arr = JSON.parse(localStorage.getItem(LS_PROMPTS) || 'null'); } catch { arr = null; }
+    if (!Array.isArray(arr)) {
+      // migrate legacy single prompt
+      const single = (localStorage.getItem(LS_PROMPT) || '').trim();
+      arr = single ? [{ id: Date.now(), name: '默认提示词', content: single, enabled: true }] : [];
+      localStorage.setItem(LS_PROMPTS, JSON.stringify(arr));
+    }
+    return arr;
+  }
+
+  function savePrompts(arr) {
+    localStorage.setItem(LS_PROMPTS, JSON.stringify(arr));
+  }
+
+  function renderPromptCards() {
+    const prompts = loadPrompts();
+    if (!prompts.length) {
+      promptListEl.innerHTML = '<div style="color:#555;font-size:13px;text-align:center;padding:20px 0">暂无提示词，输入名称后点击"添加"</div>';
+      return;
+    }
+    promptListEl.innerHTML = prompts.map(p => `
+      <div class="dse-pcard${p.enabled ? '' : ' disabled'}" data-id="${p.id}">
+        <div class="dse-pcard-hd">
+          <label class="dse-pcard-toggle"><input type="checkbox" class="p-toggle" ${p.enabled ? 'checked' : ''}><span class="slider"></span></label>
+          <span class="pname">${esc(p.name)}</span>
+          <button class="btn-pc p-edit" title="编辑">编辑</button>
+          <button class="btn-pc p-rename" title="重命名">重命名</button>
+          <button class="btn-pc dng p-del" title="删除">删除</button>
+        </div>
+        <div class="dse-pcard-body">
+          <textarea class="p-content" rows="4">${esc(p.content)}</textarea>
+          <div class="pfoot"><button class="pri p-save-content">保存内容</button></div>
+        </div>
+      </div>
+    `).join('');
+
+    // event delegation
+    promptListEl.querySelectorAll('.dse-pcard').forEach(card => {
+      const id = Number(card.dataset.id);
+
+      card.querySelector('.p-toggle').onchange = (e) => {
+        const prompts = loadPrompts();
+        const p = prompts.find(x => x.id === id);
+        if (p) { p.enabled = e.target.checked; savePrompts(prompts); }
+        card.classList.toggle('disabled', !e.target.checked);
+      };
+
+      card.querySelector('.p-edit').onclick = () => {
+        card.querySelector('.dse-pcard-body').classList.toggle('open');
+      };
+
+      card.querySelector('.p-rename').onclick = () => {
+        const nameEl = card.querySelector('.pname');
+        nameEl.contentEditable = 'true';
+        nameEl.focus();
+        const done = () => {
+          nameEl.contentEditable = 'false';
+          const newName = nameEl.textContent.trim() || '未命名';
+          nameEl.textContent = newName;
+          const prompts = loadPrompts();
+          const p = prompts.find(x => x.id === id);
+          if (p) { p.name = newName; savePrompts(prompts); }
+        };
+        nameEl.onblur = done;
+        nameEl.onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); nameEl.blur(); } };
+      };
+
+      card.querySelector('.p-del').onclick = () => {
+        if (!confirm('确定删除该提示词？')) return;
+        const prompts = loadPrompts().filter(x => x.id !== id);
+        savePrompts(prompts);
+        renderPromptCards();
+        toast('提示词已删除', 'info');
+      };
+
+      card.querySelector('.p-save-content').onclick = () => {
+        const val = card.querySelector('.p-content').value.trim();
+        const prompts = loadPrompts();
+        const p = prompts.find(x => x.id === id);
+        if (p) { p.content = val; savePrompts(prompts); }
+        toast('内容已保存', 'success');
+        card.querySelector('.dse-pcard-body').classList.remove('open');
+      };
+    });
+  }
+
+  panel.querySelector('#prompt-add').onclick = () => {
+    const name = promptNameInput.value.trim();
+    if (!name) { toast('请输入提示词名称', 'info'); return; }
+    const prompts = loadPrompts();
+    prompts.push({ id: Date.now(), name, content: '', enabled: true });
+    savePrompts(prompts);
+    promptNameInput.value = '';
+    renderPromptCards();
+    toast('提示词已添加', 'success');
+    // auto-expand the new card for editing
+    const lastCard = promptListEl.lastElementChild;
+    if (lastCard) {
+      lastCard.querySelector('.dse-pcard-body').classList.add('open');
+      lastCard.querySelector('.p-content').focus();
+    }
   };
 
-  console.log('[DSE] DeepSeek Chat Enhance v3.1 loaded');
+  renderPromptCards();
+
+  console.log('[DSE] DeepSeek Chat Enhance v3.2 loaded');
 
   }); // end waitForDOM
 })();
