@@ -11,7 +11,8 @@ from typing import Any
 
 WORKSPACE_ROOT: pathlib.Path = pathlib.Path(os.environ.get("DS_WORKSPACE", os.getcwd())).resolve()
 IS_WINDOWS: bool = sys.platform == "win32"
-PLATFORM_NAME: str = "Windows" if IS_WINDOWS else "Linux"
+IS_DARWIN: bool = sys.platform == "darwin"
+PLATFORM_NAME: str = "Windows" if IS_WINDOWS else ("macOS" if IS_DARWIN else "Linux")
 
 DANGEROUS_PATTERNS: list[re.Pattern] = [
     # Unix — file system destruction
@@ -40,7 +41,10 @@ DANGEROUS_PATTERNS: list[re.Pattern] = [
 
 def _validate_path(path: str) -> pathlib.Path:
     """Validate path is within workspace. Raises ValueError if outside."""
-    p = pathlib.Path(path).expanduser().resolve()
+    raw = pathlib.Path(path).expanduser()
+    if not raw.is_absolute():
+        raw = WORKSPACE_ROOT / raw
+    p = raw.resolve()
     try:
         p.relative_to(WORKSPACE_ROOT)
     except ValueError:

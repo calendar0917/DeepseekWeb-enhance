@@ -22,6 +22,21 @@ class TestPathValidation:
         result = shell._validate_path("test.txt")
         assert result == test_file.resolve()
 
+    def test_validate_relative_path_uses_workspace_not_process_cwd(self, tmp_path, monkeypatch):
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        monkeypatch.setenv("DS_WORKSPACE", str(workspace))
+        monkeypatch.chdir(outside)
+        shell.WORKSPACE_ROOT = workspace.resolve()
+
+        test_file = workspace / "test.txt"
+        test_file.write_text("hello")
+
+        result = shell._validate_path("test.txt")
+        assert result == test_file.resolve()
+
     def test_validate_path_traversal_blocked(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DS_WORKSPACE", str(tmp_path))
         shell.WORKSPACE_ROOT = tmp_path.resolve()

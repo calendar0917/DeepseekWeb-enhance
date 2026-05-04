@@ -75,6 +75,84 @@ class TestHTTPMCPServer:
         result = await server.call_tool("echo", {"input": "hello"})
         assert "content" in result
 
+    def test_http_headers_expand_env_vars(self, monkeypatch):
+        """Header values can reference environment variables for secrets."""
+        monkeypatch.setenv("MCP_TEST_TOKEN", "secret-token")
+        server = HTTPMCPServer(
+            name="test-http",
+            url="http://localhost:9999/mcp",
+            headers={"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+        )
+
+        headers = server._build_headers()
+
+        assert headers["Authorization"] == "Bearer secret-token"
+
+    @pytest.mark.asyncio
+    async def test_http_start_uses_mcp_session_id_response_header(self):
+        """Streamable HTTP servers may return the session id only as a header."""
+        server = HTTPMCPServer(name="test-http", url="http://localhost:9999/mcp")
+
+        class DummyResponse:
+            def __init__(self, *, headers, status_code=200, text="", json_body=None):
+                self.headers = headers
+                self.status_code = status_code
+                self.text = text
+                self._json_body = json_body
+
+            def json(self):
+                return self._json_body
+
+        class DummyClient:
+            def __init__(self):
+                self.calls = []
+                self.responses = [
+                    DummyResponse(
+                        headers={
+                            "content-type": "text/event-stream",
+                            "mcp-session-id": "header-session",
+                        },
+                        text=(
+                            'event: message\n'
+                            'data: {"jsonrpc":"2.0","id":1,"result":'
+                            '{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},'
+                            '"serverInfo":{"name":"mock","version":"0.1"}}}\n\n'
+                        ),
+                    ),
+                    DummyResponse(
+                        headers={"content-type": "application/json"},
+                        status_code=202,
+                        json_body=None,
+                    ),
+                    DummyResponse(
+                        headers={"content-type": "text/event-stream"},
+                        text=(
+                            'event: message\n'
+                            'data: {"jsonrpc":"2.0","id":2,"result":{"tools":'
+                            '[{"name":"mock_tool","description":"A mock tool",'
+                            '"inputSchema":{"type":"object","properties":{}}}]}}\n\n'
+                        ),
+                    ),
+                ]
+
+            async def post(self, url, json, headers):
+                self.calls.append({"url": url, "json": json, "headers": headers})
+                return self.responses.pop(0)
+
+            async def aclose(self):
+                pass
+
+        dummy_client = DummyClient()
+        with patch("tools.mcp_external.httpx.AsyncClient", return_value=dummy_client):
+            ok = await server.start()
+
+        assert ok is True
+        assert server.connected is True
+        assert server._session_id == "header-session"
+        assert server.tools[0]["name"] == "mock_tool"
+        assert dummy_client.calls[1]["headers"]["Mcp-Session-Id"] == "header-session"
+        assert dummy_client.calls[2]["headers"]["Mcp-Session-Id"] == "header-session"
+
 
 class TestExternalMCPProxy:
     """Test the proxy manager."""

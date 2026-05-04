@@ -232,7 +232,9 @@ class HTTPMCPServer:
             if result is None:
                 return False
 
-            self._session_id = result.get("sessionId")
+            session_id = result.get("sessionId")
+            if session_id:
+                self._session_id = session_id
             await self._notify("notifications/initialized", {})
 
             tools_result = await self._rpc("tools/list", {})
@@ -265,9 +267,13 @@ class HTTPMCPServer:
     def tools(self) -> list[dict]:
         return self._tools
 
+    def _expand_env_vars(self, value: str) -> str:
+        """Expand ${VAR} / $VAR references in header values from process env."""
+        return os.path.expandvars(value)
+
     def _build_headers(self) -> dict:
         h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
-        h.update(self.headers)
+        h.update({k: self._expand_env_vars(v) if isinstance(v, str) else v for k, v in self.headers.items()})
         if self._session_id:
             h["Mcp-Session-Id"] = self._session_id
         return h
@@ -275,6 +281,15 @@ class HTTPMCPServer:
     async def _post(self, body: dict) -> dict | None:
         """POST JSON-RPC message, handle both JSON and SSE responses."""
         resp = await self._client.post(self.url, json=body, headers=self._build_headers())
+
+        # Streamable HTTP MCP servers commonly return the session id in the
+        # Mcp-Session-Id response header during initialize. Preserve it so
+        # subsequent notifications and tool requests do not fail with
+        # session_required.
+        session_id = resp.headers.get("mcp-session-id") or resp.headers.get("Mcp-Session-Id")
+        if session_id:
+            self._session_id = session_id
+
         ct = resp.headers.get("content-type", "")
 
         # SSE response — parse first data event
