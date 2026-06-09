@@ -1,18 +1,46 @@
 # Changelog
 
+## [4.2.1] - 2026-06-09
+
+### Fixed
+- DS Enhance: 增加固定快捷条，提供“指令 / 搜索 / 批量”保底入口，避免 DeepSeek DOM 变化导致原生挂载点不可见。
+- DS Enhance: 输入区、侧边栏和消息导出入口增加更宽松 fallback，减少页面结构变化时无入口的问题。
+- DS Enhance: 助手回复旁增加单条消息导出按钮，避免打开面板后丢失选中文本。
+
 ## [4.2.0] - 2026-06-07
 
 ### Added
 - DS MCP Bridge: 设置页新增“工具结果自动发送”开关，关闭后工具结果只填入输入框。
-- DS MCP Bridge: MCP 代码块默认折叠，并在代码块工具栏增加“展开/折叠”和“重发”按钮。
+- DS MCP Bridge: MCP 代码块默认折叠，并在代码块工具栏增加“展开/折叠”、“复制参数”和“重发”按钮。
 - DS MCP Bridge: 注入的系统指令增加结束标记，并在聊天消息中自动折叠显示。
+- DS MCP Bridge: 设置页新增工具白名单、黑名单和 `execute_command` 二次确认开关；高风险命令会在确认弹窗中追加前端警告。
+- DS Enhance: 搜索页支持日期范围过滤、分类组合过滤和结果跳转。
+- DS Enhance: 分类页支持勾选会话后批量添加或移除分类，导入分类数据前明确覆盖确认。
+- DS Enhance: 导出文件名包含会话标题和日期，多会话导出包含数量和日期，减少覆盖风险。
+- DS Enhance: 导出页新增当前选中文本片段导出入口，支持把当前消息片段保存为 Markdown。
+- DS Enhance: Fork 起点选择弹窗显示助手回复预览，并标注 fork 范围。
+- DS Enhance: Markdown 导出按 `parent_id` 渲染消息树，保留分支层级。
+- DS Enhance: 批量删除和批量重命名失败时显示失败项、错误原因，并支持重试失败项。
+- DS Enhance: 提示词库支持分组、`{date}` / `{selection}` / `{clipboard}` 变量模板和启用顺序调整。
+- DS MCP Bridge: 工具结果历史支持折叠、复制结果、复制参数和重发，长结果默认文件化注入并记录来源和耗时。
+- DS MCP Bridge: 外部 MCP 服务器页新增运行摘要、外部工具标签和启动失败摘要。
+- DS MCP Bridge: TTS 自动朗读支持按当前会话单独开启，语音选择支持直接预览并显示加载/失败状态。
+- 发布材料：新增 `SECURITY.md`、`RELEASE.md` 和 GreasyFork / ScriptCat 发布文案。
+- DeepSeek DOM 嵌入：新增 adapter 和 mount manager，支持输入区、消息区、侧边栏的原生挂载入口。
+- 工程化：新增 `src/core`、`src/adapters`、`src/features`、`src/entries`、`scripts/build-userscripts.js` 和 `dist/*.user.js` 发布产物，构建时校验 metadata 并同步根目录安装脚本。
+- 工程化：抽离 DOM mount、storage、DeepSeek adapter、导出格式和 MCP 工具策略模块，两个 entry 选择性打包为单文件 userscript。
+- 发布检查：新增 `scripts/check-release.js`，校验 userscript 版本、metadata、raw 链接和 `dist` 产物一致性。
+- CI: GitHub Actions 新增 userscript 构建、语法检查和回归测试任务。
 
 ### Fixed
 - DS Enhance: 修复 DeepSeek 页面移除 `[role=button]` 后提示词选择按钮无法挂载的问题。
 - DS Enhance: 修复对话列表分页在后端重复返回同一页时膨胀到 5000 条的问题，增加会话去重与游标停滞保护。
+- DS MCP Bridge: 收敛为 DeepSeek 专用脚本，移除 ChatGPT 页面匹配和适配器样板。
 
 ### Tests
-- 新增 userscript 回归测试，覆盖分页去重、提示词按钮挂载选择器和 MCP 工具名解析。
+- 新增 userscript 回归测试，覆盖分页去重、提示词按钮挂载选择器、原生嵌入挂载、MCP 工具策略和工具名解析。
+- 新增 DeepSeek DOM fixture 测试，验证输入区、侧边栏和消息 action bar 挂载锚点。
+- 新增 `src/core`、`src/adapters/deepseek`、`src/features/export` 和 `src/features/mcp` 单元测试，覆盖 mountManager debounce、storage、adapter selector fallback、导出格式和 MCP 工具策略。
 
 ## [4.1.0] - 2026-04-28
 
@@ -32,9 +60,7 @@
   - 自定义 HTTP TTS（接入任意 TTS API，支持请求模板）
   - 语音筛选：按语言（中文/英语/日语/韩语）和性别过滤，连通 server 后加载完整 322 个语音
 - **自动朗读**：AI 回复完成后自动播放 TTS，等待文本稳定（连续 1.5 秒无变化）后触发
-- **多站点适配器架构**：自动检测当前站点并加载对应适配器
-  - DeepSeek Chat — 完整支持
-  - ChatGPT — 基础适配样板（开发中）
+- **DeepSeek 站点适配器**：集中管理 DeepSeek Chat 的消息和输入框选择器
 - **模块开关**：MCP / TTS / 自动朗读 可独立开启/关闭（设置页）
 - **工具结果文件化**：`read_file` / `list_directory` 结果不再填满聊天窗口，而是作为文件上下文自动注入下次对话
 - **文件处理器** (`server/tools/file_processor.py`)：支持 TXT/MD/JSON/CSV/PDF/图片
@@ -44,7 +70,6 @@
 ### Changed
 - `ds-mcp-bridge.user.js` 版本升级至 4.0.0，行数从 ~1251 增至 ~1680
 - XHR/fetch hook 现在受模块开关控制（MCP 关闭时不拦截请求）
-- `@match` 新增 `chat.openai.com` 和 `chatgpt.com`
 
 ### Dependencies
 - 新增 `edge-tts>=6.0`（TTS 引擎）

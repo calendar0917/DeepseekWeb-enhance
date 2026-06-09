@@ -1,0 +1,15 @@
+{
+  "name": "deepseekweb-enhance",
+  "version": "4.2.1",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "node scripts/build-userscripts.js",
+    "check": "node --check ds-enhance.user.js && node --check ds-mcp-bridge.user.js",
+    "check:release": "node scripts/check-release.js",
+    "test": "node --test tests/userscript-regressions.test.js tests/dom-fixtures.test.js tests/build-artifacts.test.js tests/src-modules.test.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.5"
+  }
+}

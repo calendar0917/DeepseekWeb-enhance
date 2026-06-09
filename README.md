@@ -1,19 +1,38 @@
 # DS Enhance
 
-多站点 AI Chat 浏览器增强工具集。包含两个独立脚本，共享基础设施。
+DeepSeek Chat 浏览器增强工具集。包含两个独立脚本，共享基础设施。
 
 ## 项目概览
 
 | 脚本 | 定位 | 按钮颜色 |
 |------|------|---------|
 | [**ds-enhance**](./ds-enhance.user.js) | 对话管理增强（删除、Fork、分类、搜索、导出、重命名） | 蓝色 |
-| [**ds-mcp-bridge**](./ds-mcp-bridge.user.js) | MCP 工具调用 + TTS 朗读 + 多站点适配（DeepSeek / ChatGPT） | 绿色 |
+| [**ds-mcp-bridge**](./ds-mcp-bridge.user.js) | MCP 工具调用 + TTS 朗读 | 绿色 |
 
 ## 安装
 
-1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
-2. 在 Tampermonkey 中新建脚本，粘贴对应 `.user.js` 文件内容并保存
-3. 打开 [chat.deepseek.com](https://chat.deepseek.com) 或 [chatgpt.com](https://chatgpt.com)，页面左下角出现悬浮按钮即安装成功
+### 普通用户：DS Enhance
+
+1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展。
+2. 打开 [DS Enhance raw 安装链接](https://raw.githubusercontent.com/calendar0917/DeepseekWeb-enhance/main/ds-enhance.user.js)，按 Tampermonkey 提示安装。
+3. 打开 [chat.deepseek.com](https://chat.deepseek.com)，页面左下角出现蓝色悬浮按钮即安装成功。
+
+### 高级用户：DS MCP Bridge
+
+1. 安装 [DS MCP Bridge raw 安装链接](https://raw.githubusercontent.com/calendar0917/DeepseekWeb-enhance/main/ds-mcp-bridge.user.js)。
+2. 启动本地 MCP 服务：
+
+```bash
+cd server
+pip install -r requirements.txt
+python server.py
+```
+
+3. 打开 [chat.deepseek.com](https://chat.deepseek.com)，点击绿色齿轮按钮，确认连接状态为“已连接”。
+
+DS MCP Bridge 会连接 `localhost:8024`，并可通过本地 MCP 服务执行命令、读取文件、写入文件。只应在本机可信环境中启用，详细风险见 [SECURITY.md](./SECURITY.md)。
+
+GreasyFork / ScriptCat 安装链接会在对应平台发布后补充。
 
 ---
 
@@ -51,14 +70,13 @@
 
 ## DS MCP Bridge — MCP 工具调用 + TTS 朗读
 
-让 AI Chat 具备调用本地工具的能力（执行 Shell 命令、读写文件、网络搜索等），并支持 TTS 语音朗读。
+让 DeepSeek Chat 具备调用本地工具的能力（执行 Shell 命令、读写文件、网络搜索等），并支持 TTS 语音朗读。
 
 ### 支持站点
 
 | 站点 | 状态 |
 |------|------|
 | [chat.deepseek.com](https://chat.deepseek.com) | ✅ 完整支持 |
-| [chatgpt.com](https://chatgpt.com) / [chat.openai.com](https://chat.openai.com) | 🔧 基础适配（开发中） |
 
 ### 架构
 
@@ -75,7 +93,7 @@ MCP Server (localhost:8024)     ← 本地 Python 服务
 
 ### 安装
 
-1. 安装油猴脚本 `ds-mcp-bridge.user.js`（同上）
+1. 安装油猴脚本 `ds-mcp-bridge.user.js`（见上方高级用户安装路径）
 2. 启动本地 MCP 服务器：
 
 ```bash
@@ -85,6 +103,8 @@ python server.py
 ```
 
 3. 在 DeepSeek 页面点击绿色齿轮按钮，确认连接状态为"已连接"
+
+MCP 脚本会访问本机 `localhost:8024` 服务，工具调用可能触发本地命令执行、文件读取或文件写入。不要在不可信页面、共享账号或不受控机器上启用。
 
 **快捷键：** `Ctrl+Shift+M` 切换面板
 
@@ -156,7 +176,7 @@ python server.py
 
 ### TTS 朗读
 
-AI 回复旁显示 🔊 按钮，支持手动朗读和自动朗读。
+AI 回复旁显示 🔊 按钮，支持手动朗读、全局自动朗读和当前会话自动朗读。
 
 | TTS 引擎 | 说明 | 配置 |
 |---------|------|------|
@@ -164,7 +184,7 @@ AI 回复旁显示 🔊 按钮，支持手动朗读和自动朗读。
 | **OpenAI 兼容** | 支持 OpenAI、SiliconFlow 等任何兼容 API | 需配置 API Key / Base URL / 模型 |
 | **自定义 HTTP** | 接入任意 TTS API | 需配置 URL / 请求模板 |
 
-设置页支持语音筛选（按语言、性别），内置 21 个常用语音，连通 server 后加载完整 322 个语音列表。
+设置页支持语音筛选（按语言、性别）和语音预览，内置 21 个常用语音，连通 server 后加载完整 322 个语音列表。
 
 ### 模块开关
 
@@ -175,6 +195,7 @@ AI 回复旁显示 🔊 按钮，支持手动朗读和自动朗读。
 | 🔧 MCP 工具调用 | 拦截 AI 回复并执行本地工具 |
 | 🔊 TTS 朗读 | 显示朗读按钮 |
 | 🔊 自动朗读 | AI 回复完成后自动播放（等待文本稳定后触发） |
+| 🔊 当前会话自动朗读 | 只对当前会话开启自动播放 |
 
 ### 工具结果文件化
 
@@ -184,10 +205,19 @@ AI 回复旁显示 🔊 按钮，支持手动朗读和自动朗读。
 
 ```
 ds-enhance/
-├── ds-enhance.user.js      # 油猴脚本 — 对话管理增强 (~1064 行)
-├── ds-mcp-bridge.user.js   # 油猴脚本 — MCP + TTS + 多站点适配 (~1680 行)
-├── shared/
-│   └── shared-header.js    # 共享基础设施（FAB、面板、toast、工具函数）
+├── src/
+│   ├── adapters/            # DeepSeek 选择器和挂载定位
+│   ├── core/                # DOM mount 等共享基础设施
+│   ├── features/            # 导出、MCP 等功能模块
+│   └── entries/             # userscript 源入口
+├── dist/                    # 构建后的发布 userscript
+├── scripts/
+│   ├── build-userscripts.js # 构建与 metadata 校验
+│   └── check-release.js     # 发布前版本和链接一致性检查
+├── ds-enhance.user.js      # 构建同步的安装脚本
+├── ds-mcp-bridge.user.js   # 构建同步的安装脚本
+├── tests/                  # userscript 回归、DOM fixture、模块测试
+├── docs/                   # 发布文案、手工验收和存储迁移说明
 ├── server/                 # MCP 服务器端
 │   ├── server.py           # FastAPI 服务 (HTTP → JSON-RPC 2.0 → 工具)
 │   ├── requirements.txt    # Python 依赖
@@ -199,36 +229,43 @@ ds-enhance/
 │       ├── tts.py          # TTS 语音合成（Edge/OpenAI/HTTP）
 │       └── file_processor.py # 文件处理（PDF/文本/图片）
 ├── README.md
+├── SECURITY.md
+├── RELEASE.md
 ├── CHANGELOG.md
 └── LICENSE
 ```
 
 ## 开发
 
-- `shared/shared-header.js` 是共享基础设施的参考源，两个脚本各自内联所需部分
+- `src/core/`、`src/adapters/`、`src/features/` 是 userscript 的开发源码，最终打包为单文件脚本
+- `src/core/ui.js`、`src/core/storage.js`、`src/core/dom-mount.js` 提供两个脚本共享的 UI、存储和 DOM 挂载基础设施
 - `server/` 可独立运行和测试：`python server.py` 启动后访问 `http://localhost:8024/health`
-- 编辑 `.user.js` 后在 Tampermonkey 中刷新脚本即可
+- 开发 userscript 时编辑 `src/entries/*.js`，运行 `npm run build` 同步根目录脚本和 `dist/*.user.js`
+- 发布前运行 `npm run build && npm run check && npm run check:release && npm test`
+- 存储 key 和迁移策略见 [docs/storage-migration.md](./docs/storage-migration.md)
+- DeepSeek 实页手工验收见 [docs/manual-smoke.md](./docs/manual-smoke.md)
 
 ## TODO
 
 ### DS Enhance
-- [ ] Fork 选择起点时增加助手回复预览
-- [ ] 搜索支持日期范围过滤
-- [ ] 导出 Markdown 支持树形分支结构
-- [ ] 批量操作失败重试机制
+- [x] Fork 选择起点时增加助手回复预览
+- [x] 搜索支持日期范围和分类组合过滤
+- [x] 会话分类支持批量设置
+- [x] 导出文件名包含标题和日期，避免覆盖
+- [x] 导出 Markdown 支持树形分支结构
+- [x] 批量操作失败重试机制
+- [x] 提示词库支持分组、变量模板和启用顺序调整
 
 ### DS MCP Bridge
-- [x] SSE 拦截（DeepSeek 原生 SSE 格式 + OpenAI 兼容格式）
+- [x] SSE 拦截（DeepSeek 原生 SSE 格式）
 - [x] 工具调用检测（正则 + flex match 双策略）
 - [x] 工具调用结果自动注入对话
 - [x] TTS 朗读（Edge / OpenAI 兼容 / 自定义 HTTP）
 - [x] 自动朗读（文本稳定后自动播放）
-- [x] 适配器架构（DeepSeek + ChatGPT 样板）
 - [x] 模块开关（MCP / TTS / 自动朗读）
 - [x] 工具结果文件化（read_file 结果自动注入上下文）
-- [ ] 工具白名单/黑名单
+- [x] 工具白名单/黑名单
 - [x] 支持外部 MCP 服务器（stdio/HTTP 传输）
-- [ ] 完善 ChatGPT 适配器选择器
 
 ## License
 
