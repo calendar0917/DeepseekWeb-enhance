@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DS Enhance
 // @namespace    https://github.com/calendar0917/DeepseekWeb-enhance
-// @version      3.2.3
+// @version      3.3.0
 // @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名、多提示词注入
 // @author       ds-enhance
 // @homepageURL  https://github.com/calendar0917/DeepseekWeb-enhance
@@ -840,7 +840,7 @@
     if (!userMsgs.length) { toast('没有用户消息', 'error'); return; }
     let sel = userMsgs.length - 1;
     const bg = document.createElement('div'); bg.className = 'dse-modal-bg';
-    bg.innerHTML = `<div class="dse-modal-box"><div class="mhd">选择 Fork 起点</div><div class="mbd" id="fp-list"></div><div class="mft"><button class="cancel">取消</button><button class="confirm">确认 Fork</button></div></div>`;
+    bg.innerHTML = `<div class="dse-modal-box"><div class="mhd">选择 Fork 起点</div><div class="mbd"><div id="fp-mode" style="display:flex;gap:14px;margin-bottom:10px;font-size:12px;color:#888"><label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="fp-mode" value="before" checked style="accent-color:#2563eb"> 保留此节点之前(含此节点)</label><label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="fp-mode" value="after" style="accent-color:#2563eb"> 保留此节点之后(含此节点)</label></div><div id="fp-list"></div></div><div class="mft"><button class="cancel">取消</button><button class="confirm">确认 Fork</button></div></div>`;
     const listEl = bg.querySelector('#fp-list');
     userMsgs.forEach((m, i) => {
       const r = document.createElement('div'); r.className = `dse-msg-row ${i === sel ? 'sel' : ''}`;
@@ -851,13 +851,22 @@
     bg.querySelector('.cancel').onclick = () => bg.remove();
     bg.onclick = e => { if (e.target === bg) bg.remove(); };
     bg.querySelector('.confirm').onclick = async () => {
+      const mode = bg.querySelector('input[name="fp-mode"]:checked')?.value || 'before';
       bg.remove();
       const sm = userMsgs[sel];
-      const mm = new Map(messages.map(m => [m.message_id, m]));
-      const ids = []; let cur = sm;
-      while (cur) { ids.unshift(cur.message_id); cur = cur.parent_id ? mm.get(cur.parent_id) : null; }
-      const idx = messages.findIndex(m => m.message_id === sm.message_id);
-      if (idx >= 0 && idx + 1 < messages.length) { const n = messages[idx + 1]; if (n.role === 'ASSISTANT' && n.parent_id === sm.message_id) ids.push(n.message_id); }
+      let ids;
+      if (mode === 'after') {
+        const childMap = new Map();
+        for (const m of messages) { if (m.parent_id) { if (!childMap.has(m.parent_id)) childMap.set(m.parent_id, []); childMap.get(m.parent_id).push(m); } }
+        ids = [sm.message_id]; let cur = sm;
+        while (cur) { const cs = childMap.get(cur.message_id); if (cs && cs.length) { const c = cs[cs.length - 1]; ids.push(c.message_id); cur = c; } else break; }
+      } else {
+        const mm = new Map(messages.map(m => [m.message_id, m]));
+        ids = []; let cur = sm;
+        while (cur) { ids.unshift(cur.message_id); cur = cur.parent_id ? mm.get(cur.parent_id) : null; }
+        const idx = messages.findIndex(m => m.message_id === sm.message_id);
+        if (idx >= 0 && idx + 1 < messages.length) { const n = messages[idx + 1]; if (n.role === 'ASSISTANT' && n.parent_id === sm.message_id) ids.push(n.message_id); }
+      }
       try {
         toast('Fork 中...', 'info');
         const sd = await apiCreateShare(sessionId, ids);
