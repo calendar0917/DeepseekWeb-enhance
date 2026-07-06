@@ -1377,7 +1377,9 @@
       if (!btn) {
         btn = document.createElement('div');
         btn.id = this.btnId;
-        btn.className = 'ds-atom-button f79352dc ds-toggle-button ds-toggle-button--md';
+        // 动态获取当前页面原生按钮的类名，并过滤掉可能存在的“已选中”状态类
+        const sourceBtn = container.querySelector('.ds-toggle-button:not([id="dse-inline-btn"])') || anchorBtn;
+        btn.className = sourceBtn ? sourceBtn.className.replace(/\b(ds-toggle-button--selected|active)\b/g, '').trim() : 'ds-toggle-button ds-toggle-button--m';
         btn.setAttribute('role', 'button');
         btn.setAttribute('tabindex', '0');
         btn.innerHTML = `
