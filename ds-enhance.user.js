@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DS Enhance
 // @namespace    https://github.com/calendar0917/DeepseekWeb-enhance
-// @version      3.3.0
+// @version      3.3.1
 // @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名、多提示词注入
 // @author       ds-enhance
 // @homepageURL  https://github.com/calendar0917/DeepseekWeb-enhance
@@ -36,83 +36,102 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  对话切换监控与指纹记忆机制
+  //  对话切换监控与指纹记忆机制（基于 session_id）
   // ═══════════════════════════════════════════════════════════════════
-  let lastInjectedSignature = null; // 记录上一次注入的具体内容
+  let injectedSessions = {}; // { sessionId: signature }
+
+  function getCurrentSessionId() {
+    const m = location.pathname.match(/\/s\/([a-f0-9-]+)/);
+    return m ? m[1] : null;
+  }
+
+  function safeParsePath(url) {
+    try {
+      if (typeof url === 'string') {
+        if (url.startsWith('http') || url.startsWith('//')) return new URL(url).pathname;
+        if (url.startsWith('/')) return url.split('?')[0].split('#')[0];
+        return new URL(url, location.origin).pathname;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
 
   const originalPushState = history.pushState;
   history.pushState = function(...args) {
     const newUrl = args[2];
     if (newUrl) {
       const oldPath = location.pathname;
-      const newPath = newUrl.toString().startsWith('http')
-          ? new URL(newUrl).pathname
-          : new URL(newUrl, location.origin).pathname;
+      const newPath = safeParsePath(newUrl);
 
-      if (oldPath === '/' && newPath.startsWith('/s/')) {
-          // 原地获取房间号，不重置
-      } else if (oldPath !== newPath) {
-          // 切换了房间，重置指纹
-          lastInjectedSignature = null;
+      if (newPath && oldPath !== newPath) {
+        // 切换了房间，但保留旧房间的注入记录
+        // 如果是回到首页，不做特殊处理
       }
     }
     return originalPushState.apply(this, args);
   };
 
   window.addEventListener('popstate', () => {
-    lastInjectedSignature = null;
+    // 返回/前进时，不主动清除注入记录，让逻辑自动判断
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  //  注入与修改请求逻辑
+  //  注入与修改请求逻辑（修复版）
   // ═══════════════════════════════════════════════════════════════════
 
   function modifyRequest(bodyStr) {
     const enabled = getEnabledPrompts();
-    // 生成当前所有开启状态的提示词的“指纹”
     const currentSignature = enabled.join('\n\n');
 
-    // 逻辑分支 1：如果当前关闭了所有提示词，清空指纹记录，直接放行
+    // 如果没有启用的提示词，直接放行
     if (!currentSignature) {
-      lastInjectedSignature = null;
       return bodyStr;
     }
 
     if (!bodyStr) return bodyStr;
-    if (bodyStr.includes(CUSTOM_PROMPT_MARKER)) return bodyStr;
 
-    // 逻辑分支 2：对比指纹。如果当前要发的提示词和上次发的一模一样，直接切断
-    if (lastInjectedSignature === currentSignature) {
+    // 如果已经包含自定义标记，说明已经注入过，直接放行
+    if (bodyStr.includes(CUSTOM_PROMPT_MARKER)) {
       return bodyStr;
     }
 
-    // 逻辑分支 3：是全新的提示词，或者是改了字的提示词，执行注入
+    const sessionId = getCurrentSessionId();
+
+    // 如果在同一会话中已经注入过相同的提示词，不再重复注入
+    if (sessionId && injectedSessions[sessionId] === currentSignature) {
+      return bodyStr;
+    }
+
+    // 执行注入
     try {
       const parsed = JSON.parse(bodyStr);
       const tagged = `${CUSTOM_PROMPT_MARKER}\n${currentSignature}`;
       let injected = false;
 
-      // 后置注入逻辑
       if (parsed.prompt && typeof parsed.prompt === 'string') {
         parsed.prompt = parsed.prompt + '\n\n' + tagged;
         injected = true;
       }
       if (parsed.messages?.length) {
         const lastIdx = parsed.messages.length - 1;
-        parsed.messages[lastIdx].content = parsed.messages[lastIdx].content + '\n\n' + tagged;
-        injected = true;
+        if (parsed.messages[lastIdx] && typeof parsed.messages[lastIdx].content === 'string') {
+          parsed.messages[lastIdx].content = parsed.messages[lastIdx].content + '\n\n' + tagged;
+          injected = true;
+        }
       }
 
       if (injected) {
-        // 注入成功后，更新指纹记录为当前提示词
-        lastInjectedSignature = currentSignature;
+        // 记录注入状态（绑定到会话）
+        if (sessionId) {
+          injectedSessions[sessionId] = currentSignature;
+        }
         return JSON.stringify(parsed);
       }
     } catch { /* not JSON */ }
     return bodyStr;
   }
 
-  // Hook XHR
+  // Hook XHR（修复版：防止内存泄漏）
   const XHRProto = XMLHttpRequest.prototype;
   const _origOpen = XHRProto.open;
   const _origSend = XHRProto.send;
@@ -128,16 +147,26 @@
     if (meta && meta.url.includes('completion') && body) {
       body = modifyRequest(body);
     }
+    // 清理元数据，防止潜在的内存泄漏
+    if (meta) {
+      this.addEventListener('loadend', () => {
+        _xhrMeta.delete(this);
+      }, { once: true });
+    }
     return _origSend.apply(this, [body]);
   };
 
-  // Hook fetch
+  // Hook fetch（修复版：不修改原始参数对象）
   const _origFetch = window.fetch;
 
   window.fetch = async function (...args) {
     const url = (typeof args[0] === 'string') ? args[0] : args[0]?.url;
     if (url && url.includes('completion') && args[1]?.body) {
-      args[1].body = modifyRequest(args[1].body);
+      const modifiedBody = modifyRequest(args[1].body);
+      if (modifiedBody !== args[1].body) {
+        // 创建新对象，避免修改原始参数
+        args[1] = { ...args[1], body: modifiedBody };
+      }
     }
     return _origFetch.apply(this, args);
   };
@@ -148,15 +177,22 @@
   function waitForDOM() {
     return new Promise(resolve => {
       if (document.body) resolve();
-      else new MutationObserver(() => { if (document.body) resolve(); })
-        .observe(document.documentElement, { childList: true });
+      else {
+        const observer = new MutationObserver(() => {
+          if (document.body) {
+            observer.disconnect();
+            resolve();
+          }
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      }
     });
   }
 
   waitForDOM().then(() => {
 
   // ═══════════════════════════════════════════════════════════════════
-  //  API
+  //  API（添加重试机制）
   // ═══════════════════════════════════════════════════════════════════
   function getToken() {
     try {
@@ -172,12 +208,36 @@
   async function api(path, method = 'GET', body) {
     const token = getToken();
     if (!token) throw new Error('未找到 userToken，请先登录 DeepSeek');
-    const opts = { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-App-Version': '2025.04.25' } };
+    const opts = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-App-Version': '2025.04.25'
+      }
+    };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(`${API}${path}`, opts);
+    if (res.status === 401) throw new Error('登录已过期，请重新登录');
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     const json = await res.json();
     if (json.code !== 0) throw new Error(json.msg || `API error ${json.code}`);
     return json.data;
+  }
+
+  // 带重试的 API 调用
+  async function apiWithRetry(path, method, body, retries = 2) {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        return await api(path, method, body);
+      } catch (e) {
+        if (i === retries) throw e;
+        // 仅对网络错误进行重试，token 问题不重试
+        if (e.message.includes('登录已过期') || e.message.includes('未找到 userToken')) throw e;
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
+      }
+    }
+    throw new Error('重试失败');
   }
 
   async function fetchSessionsPage(cursor) {
@@ -258,19 +318,38 @@
     return sessions;
   }
 
-  const apiDelete = (id) => api('/chat_session/delete', 'POST', { chat_session_id: id });
-  const apiDeleteAll = () => api('/chat_session/delete_all', 'POST');
-  const apiRename = (id, title) => api('/chat_session/update_title', 'POST', { chat_session_id: id, title });
+  const apiDelete = (id) => apiWithRetry('/chat_session/delete', 'POST', { chat_session_id: id });
+  const apiDeleteAll = () => apiWithRetry('/chat_session/delete_all', 'POST');
+  const apiRename = (id, title) => apiWithRetry('/chat_session/update_title', 'POST', { chat_session_id: id, title });
   const apiHistory = (id) => api(`/chat/history_messages?chat_session_id=${id}`);
   const apiCreateShare = (sid, mids) => api('/share/create', 'POST', { chat_session_id: sid, message_ids: mids });
   const apiForkShare = (shareId) => api('/share/fork', 'POST', { share_id: shareId });
 
   // ═══════════════════════════════════════════════════════════════════
-  //  Categories (localStorage)
+  //  Categories (localStorage) - 添加数据验证
   // ═══════════════════════════════════════════════════════════════════
+  function validateCatData(data) {
+    if (!data || typeof data !== 'object') return false;
+    if (!Array.isArray(data.categories)) return false;
+    if (!data.categories.every(c => c.id && typeof c.name === 'string' && typeof c.color === 'string')) return false;
+    if (typeof data.sessionMap !== 'object') return false;
+    // 检查 sessionMap 中的分类 ID 是否存在
+    const catIds = new Set(data.categories.map(c => c.id));
+    for (const [sid, cats] of Object.entries(data.sessionMap)) {
+      if (!Array.isArray(cats)) return false;
+      if (cats.some(id => !catIds.has(id))) return false; // 有无效分类引用
+    }
+    return true;
+  }
+
   function loadCats() {
-    try { return JSON.parse(localStorage.getItem(LS_CATS)) || { categories: [], sessionMap: {} }; }
-    catch { return { categories: [], sessionMap: {} }; }
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_CATS));
+      if (raw && validateCatData(raw)) return raw;
+      // 数据不合法则重置
+      if (raw) localStorage.removeItem(LS_CATS);
+    } catch { /* corrupt */ }
+    return { categories: [], sessionMap: {} };
   }
   function saveCats(data) { localStorage.setItem(LS_CATS, JSON.stringify(data)); }
   let catData = loadCats();
@@ -305,7 +384,7 @@
   //  Helpers
   // ═══════════════════════════════════════════════════════════════════
   function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
-  function getSessionId() { const m = location.pathname.match(/\/s\/([a-f0-9-]+)/); return m ? m[1] : null; }
+  function getSessionId() { return getCurrentSessionId(); }
   function fmtDate(ts) {
     if (!ts) return '';
     const d = new Date(ts * 1000);
@@ -330,7 +409,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  CSS
+  //  CSS（保持不变）
   // ═══════════════════════════════════════════════════════════════════
   const style = document.createElement('style');
   style.textContent = `
@@ -450,10 +529,10 @@
       background: #2c2c2e;
       border: rgba(255,255,255,.06);
       border-radius: 8px;
-      padding: 4px; /* 压缩选项整体面板上下间隔 */
+      padding: 4px;
       display: none;
       flex-direction: column;
-      gap: 2px; /* 压缩选项之间的间隔 */
+      gap: 2px;
       min-width: 160px;
       max-width: 280px;
       box-shadow: 0 4px 20px rgba(0,0,0,.5);
@@ -463,7 +542,7 @@
     }
     .dse-global-dropdown.open { display: flex; }
     .dse-dropdown-item {
-      padding: 6px 8px; /* 压缩单个选项的高度 */
+      padding: 6px 8px;
       border-radius: 6px;
       cursor: pointer;
       font-size: 13px;
@@ -693,7 +772,7 @@
       panel.querySelectorAll('.dse-section').forEach(s => s.classList.remove('active'));
       panel.querySelector(`#sec-${tab}`).classList.add('active');
       if (tab === 'fork') updateForkInfo();
-      if (tab === 'cats') renderCatChips();
+      if (tab === 'cats') { renderCatChips(); renderCatFilterBar(); }
     };
   });
 
@@ -892,7 +971,7 @@
   };
 
   // ═══════════════════════════════════════════════════════════════════
-  //  Categories
+  //  Categories（包含导入验证）
   // ═══════════════════════════════════════════════════════════════════
   const catListEl = panel.querySelector('#cat-list');
   const catChipsEl = panel.querySelector('#cat-chips');
@@ -958,6 +1037,7 @@
     const name = panel.querySelector('#cat-name').value.trim();
     const color = panel.querySelector('#cat-color').value;
     if (!name) { toast('请输入分类名称', 'error'); return; }
+    if (catData.categories.some(c => c.name === name)) { toast('分类名称已存在', 'error'); return; }
     addCategory(name, color);
     panel.querySelector('#cat-name').value = '';
     renderCatChips(); renderCatFilterBar();
@@ -969,7 +1049,7 @@
     catch (e) { toast(`失败: ${e.message}`, 'error'); }
   };
 
-  // Import/Export category data
+  // Import/Export category data（带验证）
   panel.querySelector('#cat-export-data').onclick = () => {
     const json = JSON.stringify(catData, null, 2);
     download('dse-categories.json', json, 'application/json');
@@ -982,7 +1062,10 @@
       try {
         const text = await file.text();
         const data = JSON.parse(text);
-        if (!data.categories || !data.sessionMap) throw new Error('格式错误');
+        if (!validateCatData(data)) {
+          toast('导入失败：数据格式不正确或包含无效的分类引用', 'error');
+          return;
+        }
         catData = data; saveCats(catData);
         renderCatChips(); renderCatFilterBar();
         toast('分类数据已导入', 'success');
@@ -992,7 +1075,7 @@
   };
 
   // ═══════════════════════════════════════════════════════════════════
-  //  Search
+  //  Search（添加防抖）
   // ═══════════════════════════════════════════════════════════════════
   const searchListEl = panel.querySelector('#search-list');
   const searchCountEl = panel.querySelector('#search-count');
@@ -1011,7 +1094,11 @@
     renderList(searchListEl, matched, { showCats: true, highlight: searchInput.value.trim() });
   }
 
-  searchInput.addEventListener('input', doSearch);
+  let searchDebounce;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(doSearch, 300);
+  });
 
   // ═══════════════════════════════════════════════════════════════════
   //  Export
@@ -1058,7 +1145,6 @@
         md += `- 日期: ${fmtDate(r.session?.updated_at)}\n`;
         md += `- ID: ${r.session?.id}\n\n`;
         if (r.error) { md += `> 导出失败: ${r.error}\n\n`; return; }
-        // Sort messages: follow tree structure, just list in order
         r.messages.forEach(m => {
           const role = m.role === 'USER' ? '**用户**' : '**助手**';
           md += `### ${role}\n\n${m.content || ''}\n\n---\n\n`;
@@ -1386,7 +1472,7 @@
       if (!btn) {
         btn = document.createElement('div');
         btn.id = this.btnId;
-        // 动态获取当前页面原生按钮的类名，并过滤掉可能存在的“已选中”状态类
+        // 动态获取当前页面原生按钮的类名，并过滤掉可能存在的"已选中"状态类
         const sourceBtn = container.querySelector('.ds-toggle-button:not([id="dse-inline-btn"])') || anchorBtn;
         btn.className = sourceBtn ? sourceBtn.className.replace(/\b(ds-toggle-button--selected|active)\b/g, '').trim() : 'ds-toggle-button ds-toggle-button--m';
         btn.setAttribute('role', 'button');
@@ -1526,7 +1612,7 @@
   });
   domObserver.observe(document.body, { childList: true, subtree: true });
 
-  console.log('[DSE] DeepSeek Chat Enhance v3.2.3 loaded');
+  console.log('[DSE] DeepSeek Chat Enhance v3.3.1 loaded');
 
   }); // end waitForDOM
 })();
