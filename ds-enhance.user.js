@@ -923,7 +923,7 @@
     const listEl = bg.querySelector('#fp-list');
     userMsgs.forEach((m, i) => {
       const r = document.createElement('div'); r.className = `dse-msg-row ${i === sel ? 'sel' : ''}`;
-      r.innerHTML = `<span class="num">#${i + 1}</span><span class="preview">${esc((m.content || '').substring(0, 120))}</span>`;
+      r.innerHTML = `<span class="num">#${i + 1}</span><span class="preview">${esc((m.fragments?.[0]?.content || '').substring(0, 120))}</span>`;
       r.onclick = () => { listEl.querySelectorAll('.dse-msg-row').forEach(e => e.classList.remove('sel')); r.classList.add('sel'); sel = i; };
       listEl.appendChild(r);
     });
