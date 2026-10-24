@@ -25,6 +25,13 @@
       "config": {
         "bing_api_key": ""
       }
+    },
+    "tts": {
+      "description": "文本转语音（Edge TTS / OpenAI / 自定义 HTTP）",
+      "type": "builtin",
+      "tools": [
+        "tts_synthesize"
+      ]
     }
   },
   "mcpServers": {

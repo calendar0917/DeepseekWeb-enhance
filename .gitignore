@@ -21,3 +21,6 @@ venv/
 
 # Claude
 .claude/
+
+uv.lock
+.python-version

@@ -15,33 +15,53 @@ IS_DARWIN: bool = sys.platform == "darwin"
 PLATFORM_NAME: str = "Windows" if IS_WINDOWS else ("macOS" if IS_DARWIN else "Linux")
 
 DANGEROUS_PATTERNS: list[re.Pattern] = [
-    # Unix — file system destruction
-    re.compile(r"rm\s+-[a-z]*r[a-z]*f[a-z]*\s+/"),       # rm -rf /, rm --no-preserve-root -rf /
-    re.compile(r"rm\s+-[a-z]*f[a-z]*r[a-z]*\s+/"),       # rm -fr /
-    re.compile(r":\(\)\s*\{\s*:\|\:\&\s*\}\s*;:"),        # fork bomb
-    re.compile(r"\bmkfs\b"),                               # mkfs, mkfs.ext4 etc.
-    re.compile(r"\bdd\s+if="),                             # dd if=...
-    re.compile(r">\s*/dev/sd"),                            # overwrite disk
-    re.compile(r"chmod\s+777\s+/"),                        # chmod 777 /
-    re.compile(r"chown\s+root\s+/"),                       # chown root /
-    # Unix — process kill (word boundary to avoid matching "skill", "killbill")
-    re.compile(r"\bkill\b"),                               # kill
-    re.compile(r"\bpkill\b"),                              # pkill
-    re.compile(r"\bkillall\b"),                            # killall
-    # Windows — process kill
-    re.compile(r"\btaskkill(\.exe)?\b"),                   # taskkill, taskkill.exe
-    # Windows — file system destruction (flags in any order)
-    re.compile(r"\bdel\s+(/[fFsSqQ]\s+){2,}/[fFsSqQ]"),  # del /f /s /q
-    re.compile(r"\brmdir\s+(/[sSqQ]\s+){1,}/[sSqQ]"),    # rmdir /s /q
-    re.compile(r"\brd\s+(/[sSqQ]\s+){1,}/[sSqQ]"),       # rd /s /q
-    re.compile(r"\bformat(\.com)?\b"),                     # format, format.com
-    re.compile(r"\bdiskpart\b"),                           # diskpart
+    # ── Unix 文件系统破坏 ──────────────────────────────────────────
+    re.compile(r"rm\s+-[a-z]*r[a-z]*f[a-z]*\s+/"),      # rm -rf /
+    re.compile(r"rm\s+-[a-z]*f[a-z]*r[a-z]*\s+/"),      # rm -fr /
+    re.compile(r":\(\)\s*\{\s*:\|\:\&\s*\}\s*;:"),  # fork bomb
+    re.compile(r"\bmkfs\b"),                              # mkfs
+    re.compile(r"\bdd\s+if="),                            # dd if=
+    re.compile(r">\s*/dev/sd"),                           # 覆写磁盘
+    re.compile(r"chmod\s+777\s+/"),                      # chmod 777 /
+    re.compile(r"chown\s+root\s+/"),                     # chown root /
+
+    # ── Unix 结束进程 ──────────────────────────────────────────────
+    # 只在“命令位”（行首，或 ; & | 之后）匹配。
+    # 旧规则用 \bkill\b 匹配任意位置，导致 commit message 里的
+    # "fix kill bug"、echo kill 被误杀。
+    re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?kill\b", re.MULTILINE),
+    re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?pkill\b", re.MULTILINE),
+    re.compile(r"(?:^|[;&|]\s*)(?:sudo\s+)?killall\b", re.MULTILINE),
+
+    # ── Windows 结束进程（命令位） ─────────────────────────────────
+    re.compile(r"(?:^|[;&|]\s*)(?:start\s+)?taskkill(\.exe)?\b", re.MULTILINE),
+
+    # ── Windows 文件系统破坏 ───────────────────────────────────────
+    # 旧规则要求 /f /s /q 三个标志齐全，单写 del /f 即可绕过。
+    # 现在只要出现 /f /s /q 任一标志就拦截。
+    re.compile(r"(?:^|[;&|]\s*)del\s+(?:[^&|]*\s)?/[fFsSqQ]\b", re.MULTILINE),
+    re.compile(r"(?:^|[;&|]\s*)rmdir\s+(?:[^&|]*\s)?/[sSqQ]\b", re.MULTILINE),
+    re.compile(r"(?:^|[;&|]\s*)rd\s+(?:[^&|]*\s)?/[sSqQ]\b", re.MULTILINE),
+
+    # ── 跨平台替代路径（PowerShell / Python 也能删文件） ───────────
+    re.compile(r"\bremove-item\b(?=[^&|\n]*(?:-recurse|-force|-rf))", re.MULTILINE),
+    re.compile(r"\b(?:shutil\.)?rmtree\b"),
+
+    # ── 磁盘格式化 / 分区 ─────────────────────────────────────────
+    # 旧规则 \bformat\.?com\b 误伤 pytest --format=json、echo format。
+    # 真正的格式化命令形如 `format C:` / `format.com D:`。
+    re.compile(r"(?:^|[;&|]\s*)format(?:\.com)?\s+[a-z]:", re.MULTILINE),
+    re.compile(r"(?:^|[;&|]\s*)diskpart\b", re.MULTILINE),
 ]
 
 
 def _validate_path(path: str) -> pathlib.Path:
     """Validate path is within workspace. Raises ValueError if outside."""
-    raw = pathlib.Path(path).expanduser()
+    if path is None or not str(path).strip():
+        raise ValueError(
+            f"缺少 'path' 参数：请提供相对于工作区 '{WORKSPACE_ROOT}' 的文件路径"
+        )
+    raw = pathlib.Path(str(path)).expanduser()
     if not raw.is_absolute():
         raw = WORKSPACE_ROOT / raw
     p = raw.resolve()
@@ -65,6 +85,7 @@ def execute_command(command: str, timeout: int = 30) -> str:
         result = subprocess.run(
             command,
             shell=True,
+            stdin=subprocess.DEVNULL,  # 防止命令等待交互输入（如 rmdir /s 的确认提示）而挂死
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -83,7 +104,11 @@ def execute_command(command: str, timeout: int = 30) -> str:
                 output += "\n提示：命令未找到（退出码 127），请检查命令名称是否正确"
         return output or "(命令执行完毕，无输出)"
     except subprocess.TimeoutExpired:
-        return f"命令执行超时（限制 {timeout} 秒）。如需更长时间，请增大 timeout 参数"
+        return (
+            f"命令执行超时（限制 {timeout} 秒）。如需更长时间，请增大 timeout 参数。\n"
+            f"提示：stdin 已重定向到 DEVNULL，需要交互确认的命令（如 rmdir /s、del 无 /q）会直接失败或阻塞，"
+            f"请改用非交互参数（如 /q 静默标志）"
+        )
     except Exception as e:
         return f"命令执行失败: {e}"
 
@@ -132,7 +157,7 @@ def read_file(path: str, encoding: str = "utf-8", max_bytes: int = 1_048_576) ->
     if not p.exists():
         return f"错误：文件不存在 — {p}"
     if not p.is_file():
-        return f"错误：这不是一个文件 — {p}"
+        return f"错误：'{p}' 不是一个文件（可能是目录）。请提供具体文件名"
     try:
         size = p.stat().st_size
         if size > max_bytes:
@@ -140,20 +165,56 @@ def read_file(path: str, encoding: str = "utf-8", max_bytes: int = 1_048_576) ->
         return p.read_text(encoding=encoding)
     except UnicodeDecodeError:
         return f"错误：无法以 '{encoding}' 编码读取文件，文件可能包含二进制数据，请尝试其他编码"
+    except PermissionError as e:
+        return f"读取文件失败（权限不足）: {e}"
     except Exception as e:
         return f"读取文件失败: {e}"
 
 
 def write_file(path: str, content: str, encoding: str = "utf-8") -> str:
-    """Write content to a file."""
+    """Write content to a file inside the workspace."""
+    if content is None:
+        return "错误：缺少 'content' 参数（要写入的文本内容）"
+    if not isinstance(content, str):
+        content = str(content)
+
     try:
         p = _validate_path(path)
     except ValueError as e:
         return str(e)
+
+    # 目标必须是一个文件路径，不能是目录
+    # （旧实现对目录写入会抛 PermissionError [Errno 13]，误导成“权限不足”）
+    if p.is_dir():
+        return (
+            f"错误：'{p}' 是一个目录，不能作为写入目标。"
+            f"请提供包含文件名的完整路径，例如 '{p / 'note.txt'}'"
+        )
+    if p.exists() and not p.is_file():
+        return f"错误：'{p}' 不是普通文件，拒绝写入"
+
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        return (
+            f"创建目录失败: {e}\n目标目录: {p.parent}\n"
+            f"工作区根目录: {WORKSPACE_ROOT}"
+        )
+
+    try:
         p.write_text(content, encoding=encoding)
         return f"已写入 {len(content):,} 个字符到 {p}"
+    except PermissionError as e:
+        return (
+            f"写入文件失败（权限不足）: {e}\n"
+            f"目标路径: {p}\n"
+            f"工作区根目录: {WORKSPACE_ROOT}\n"
+            f"可能原因：文件只读、被其他程序占用，或当前用户对该位置没有写权限"
+        )
+    except IsADirectoryError as e:
+        return f"写入文件失败：目标是一个目录 — {e}"
+    except UnicodeEncodeError as e:
+        return f"写入文件失败：内容无法用 '{encoding}' 编码保存 — {e}。请改用 encoding='utf-8'"
     except Exception as e:
         return f"写入文件失败: {e}"
 
@@ -192,8 +253,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "要读取的文件路径"},
+                "path": {"type": "string", "description": "要读取的文件路径（相对工作区）"},
                 "encoding": {"type": "string", "description": "文件编码（默认: utf-8）"},
+                "max_bytes": {"type": "integer", "description": "最大读取字节数（默认 1MB）"},
             },
             "required": ["path"],
         },
@@ -204,8 +266,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "要写入的文件路径"},
-                "content": {"type": "string", "description": "要写入的内容"},
+                "path": {"type": "string", "description": "要写入的文件路径（相对工作区，必须包含文件名，如 notes/a.txt）"},
+                "content": {"type": "string", "description": "要写入的文本内容"},
                 "encoding": {"type": "string", "description": "文件编码（默认: utf-8）"},
             },
             "required": ["path", "content"],
@@ -217,6 +279,10 @@ HANDLERS: dict[str, Any] = {
     "execute_command": lambda args: execute_command(args.get("command", ""), args.get("timeout", 30)),
     "get_cwd": lambda args: get_cwd(),
     "list_directory": lambda args: list_directory(args.get("path", ".")),
-    "read_file": lambda args: read_file(args.get("path", ""), args.get("encoding", "utf-8")),
-    "write_file": lambda args: write_file(args.get("path", ""), args.get("content", ""), args.get("encoding", "utf-8")),
+    "read_file": lambda args: read_file(
+        args.get("path", ""), args.get("encoding", "utf-8"), args.get("max_bytes", 1_048_576)
+    ),
+    "write_file": lambda args: write_file(
+        args.get("path", ""), args.get("content"), args.get("encoding", "utf-8")
+    ),
 }

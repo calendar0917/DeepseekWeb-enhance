@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DS MCP Bridge
 // @namespace    https://github.com/calendar0917/ds-enhance
-// @version      4.2.0
+// @version      4.2.2
 // @description  AI Chat 增强 — MCP 工具调用 + TTS 朗读 + 多站点适配
 // @author       ds-enhance
 // @match        https://chat.deepseek.com/*
@@ -19,7 +19,8 @@
 
   const SCRIPT_PREFIX = '[Bridge]';
   const DEFAULT_MCP_URL = 'http://localhost:8024/mcp';
-  const TOOL_CALL_RE = /```mcp:([\w.-]+)\n([\s\S]*?)```/g;
+  // ── FIX 1: 换行改 \s*，兼容 ```mcp:name{...}``` 无换行写法 ──
+  const TOOL_CALL_RE = /```mcp:([\w.-]+)\s*([\s\S]*?)```/g;
   const SYSTEM_HINT_START = '[系统指令]';
   const SYSTEM_HINT_END = '[系统指令结束]';
   const AUTO_SEND_KEY = 'auto_send';
@@ -193,6 +194,18 @@
     }
   }
 
+  // ── FIX 7: 共享 MCPClient 单例，避免每次工具调用都重新 initialize ──
+  let _sharedClient = null;
+  let _sharedClientUrl = null;
+  function getMCPClient() {
+    const url = GM_getValue('mcp_url', DEFAULT_MCP_URL);
+    if (!_sharedClient || _sharedClientUrl !== url) {
+      _sharedClient = new MCPClient(url);
+      _sharedClientUrl = url;
+    }
+    return _sharedClient;
+  }
+
   // ═══════════════════════════════════════════════════════════════
   //  TTS Client — Text-to-Speech via server API
   // ═══════════════════════════════════════════════════════════════
@@ -334,53 +347,69 @@
   const executedCalls = new Set();
   let _streamDebounce = null;
 
-  function checkForToolCalls(content) {
+  // ── FIX 4: 按 inputSchema 校验参数 ──
+  function validateToolArgs(toolName, args) {
+    const tool = toolRegistry.find(t => t.name === toolName);
+    if (!tool) return { ok: false, reason: `未注册的工具: ${toolName}` };
+    const schema = tool.inputSchema;
+    if (!schema || !schema.properties) return { ok: true };
+    const required = schema.required || [];
+    for (const key of required) {
+      if (!(key in args)) return { ok: false, reason: `缺少必填参数: ${key}` };
+    }
+    const allowed = new Set(Object.keys(schema.properties));
+    for (const key of Object.keys(args)) {
+      if (!allowed.has(key)) return { ok: false, reason: `未知参数: ${key}` };
+    }
+    return { ok: true };
+  }
+
+  // ── FIX 2 & 3: 只保留 ```mcp:name 协议；解析失败不 fallback；支持 final 标记 ──
+  // ── FIX 8: 一条回复里的多个工具调用 → 收集后一次性批量执行，不再逐个触发发送 ──
+  function checkForToolCalls(content, { final = false } = {}) {
     if (!content || !toolRegistry.length) return;
 
-    // Strategy 1: Match ```mcp:tool_name\n{...}\n```
     const re = new RegExp(TOOL_CALL_RE.source, 'g');
+    const calls = [];          // ← 收集本次所有合法调用
     let match;
+
     while ((match = re.exec(content)) !== null) {
       const toolName = match[1];
       const rawArgs = match[2].trim();
-      let args = {};
-      try { args = JSON.parse(rawArgs); }
-      catch { args = { input: rawArgs }; }
 
-      const key = toolName + ':' + JSON.stringify(args);
+      if (!toolRegistry.some(t => t.name === toolName)) {
+        console.warn(`${SCRIPT_PREFIX} 忽略未知工具: ${toolName}`);
+        continue;
+      }
+
+      let args;
+      try {
+        args = rawArgs ? JSON.parse(rawArgs) : {};
+      } catch (e) {
+        if (!final) continue;
+        console.warn(`${SCRIPT_PREFIX} 参数 JSON 解析失败，跳过: ${toolName}`, e.message);
+        toast(`${toolName} 参数解析失败，已跳过`, 'error');
+        continue;
+      }
+
+      const check = validateToolArgs(toolName, args);
+      if (!check.ok) {
+        if (!final) continue;
+        console.warn(`${SCRIPT_PREFIX} 参数校验失败: ${toolName}`, check.reason, args);
+        toast(`${toolName} 参数校验失败: ${check.reason}`, 'error');
+        continue;
+      }
+
+      const key = toolName + '::' + match[0];
       if (executedCalls.has(key)) continue;
       executedCalls.add(key);
 
-      console.log(`${SCRIPT_PREFIX} Tool call: ${toolName}`, args);
-      executeToolCall(toolName, args);
+      console.log(`${SCRIPT_PREFIX} Tool call queued: ${toolName}`, args);
+      calls.push({ toolName, args });
     }
 
-    // Strategy 2: Match registered tool names directly
-    // Handles SSE token boundary truncation
-    for (const tool of toolRegistry) {
-      const name = tool.name;
-      const idx = content.indexOf(name);
-      if (idx === -1) continue;
-
-      const afterName = content.substring(idx + name.length);
-      const braceStart = afterName.indexOf('{');
-      if (braceStart === -1) continue;
-
-      const braceEnd = afterName.indexOf('}', braceStart);
-      if (braceEnd === -1) continue;
-
-      const jsonStr = afterName.substring(braceStart, braceEnd + 1);
-      let args = {};
-      try { args = JSON.parse(jsonStr); }
-      catch { args = { input: jsonStr }; }
-
-      const key = name + ':' + JSON.stringify(args);
-      if (executedCalls.has(key)) continue;
-      executedCalls.add(key);
-
-      console.log(`${SCRIPT_PREFIX} Tool call: ${name}`, args);
-      executeToolCall(name, args);
-    }
+    // ← 一次性批量执行（并行），不再逐个触发
+    if (calls.length > 0) executeToolCallsBatch(calls);
   }
 
   function parseSSEChunk(rawText) {
@@ -461,11 +490,12 @@
 
           if (_streamDebounce) clearTimeout(_streamDebounce);
           _streamDebounce = setTimeout(() => {
-            if (requestContent) checkForToolCalls(requestContent);
+            if (requestContent) checkForToolCalls(requestContent); // 流式中途：final=false
           }, 1000);
         } catch { /* ignore */ }
       });
 
+      // ── FIX 5: load 时标记 final，允许最后一次解析执行 ──
       this.addEventListener('load', function () {
         try {
           const rt = this.responseText || '';
@@ -476,7 +506,7 @@
           }
         } catch { /* ignore */ }
         if (_streamDebounce) clearTimeout(_streamDebounce);
-        checkForToolCalls(requestContent);
+        checkForToolCalls(requestContent, { final: true });
       });
     }
 
@@ -498,9 +528,10 @@
       const contentType = response.headers?.get('content-type') || '';
 
       const clone = response.clone();
+      // ── FIX 5: fetch 也是完整响应，标记 final ──
       clone.text().then(text => {
         const content = parseSSEChunk(text);
-        if (content) checkForToolCalls(content);
+        if (content) checkForToolCalls(content, { final: true });
       }).catch(() => { });
 
       return response;
@@ -512,60 +543,96 @@
   // ═══════════════════════════════════════════════════════════════
   //  Tool Execution & Result Injection
   // ═══════════════════════════════════════════════════════════════
-  async function executeToolCall(toolName, args) {
-    const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
-    const client = new MCPClient(mcpUrl);
+  // ── FIX 7: 复用共享 client ──
+  // ── FIX 8: 一条消息里多个工具并行执行，结果合并后只发一次 ──
+  async function executeToolCallsBatch(calls) {
+    const client = getMCPClient();
 
-    try {
-      toast(`调用工具: ${toolName}...`, 'info');
-      const result = await client.callTool(toolName, args);
-      const resultText = result?.content?.[0]?.text || '(no result)';
-      const isError = result?.isError;
-
-      toast(isError ? `${toolName} 失败` : `${toolName} 完成`, isError ? 'error' : 'success');
-
-      if (!isError && (toolName === 'read_file' || toolName === 'list_directory')) {
-        const filename = (args.path || args.filename || 'tool_result.txt').split('/').pop().split('\\').pop();
-        addToolFileResult(filename, resultText, 'text/plain');
-        toast(`📁 ${filename} 已添加到文件列表`, 'success');
-        injectResultToChat(`[工具 ${toolName} 的结果已作为文件添加，共 ${resultText.length} 字符。发送下条消息时会自动附带文件内容。]`);
-      } else {
-        injectResultToChat(isError ? `Error: ${resultText}` : resultText);
+    const results = await Promise.all(calls.map(async ({ toolName, args }) => {
+      try {
+        toast(`调用工具: ${toolName}...`, 'info');
+        const result = await client.callTool(toolName, args);
+        const resultText = result?.content?.[0]?.text || '(no result)';
+        const isError = !!result?.isError;
+        toast(isError ? `${toolName} 失败` : `${toolName} 完成`, isError ? 'error' : 'success');
+        return { toolName, args, resultText, isError };
+      } catch (e) {
+        toast(`工具调用失败: ${e.message}`, 'error');
+        console.error(`${SCRIPT_PREFIX} Tool error:`, e);
+        return { toolName, args, resultText: e.message, isError: true };
       }
-    } catch (e) {
-      toast(`工具调用失败: ${e.message}`, 'error');
-      console.error(`${SCRIPT_PREFIX} Tool error:`, e);
-      injectResultToChat(`Error: ${e.message}`);
+    }));
+
+    const parts = [];
+    for (const r of results) {
+      if (!r.isError && (r.toolName === 'read_file' || r.toolName === 'list_directory')) {
+        const filename = (r.args.path || r.args.filename || 'tool_result.txt').split('/').pop().split('\\').pop();
+        addToolFileResult(filename, r.resultText, 'text/plain');
+        toast(`📁 ${filename} 已添加到文件列表`, 'success');
+        parts.push(`[工具 ${r.toolName} 的结果已作为文件添加，共 ${r.resultText.length} 字符。发送下条消息时会自动附带文件内容。]`);
+      } else {
+        parts.push(r.isError ? `Error: ${r.resultText}` : r.resultText);
+      }
     }
+
+    // 只注入一次（合并后的结果）
+    if (parts.length) injectResultToChat(parts.join('\n\n'));
   }
 
+  // 单工具执行入口 —— 供「重发」按钮使用
+  async function executeToolCall(toolName, args) {
+    return executeToolCallsBatch([{ toolName, args }]);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Result Injection Queue — 合并多次结果，等待间隔后一次性发送
+  // ═══════════════════════════════════════════════════════════════
+  // 工具结果返回 → 点击发送之间的等待时长（ms）
+  // 避免 AI 刚结束流式就立刻发送，被站点判定为「发送频繁」而拦截
+  const AUTO_SEND_DELAY_MS = 4000;
+  let _resultQueue = [];
+  let _flushTimer = null;
+
   function injectResultToChat(resultText) {
-    setTimeout(async () => {
-      const wrappedText = `<tool_result>\n${resultText}\n</tool_result>`;
+    _resultQueue.push(resultText);
+    if (_flushTimer) clearTimeout(_flushTimer);
+    _flushTimer = setTimeout(_flushResults, AUTO_SEND_DELAY_MS);
+  }
 
-      const input = findInputElement();
-      if (!input) {
-        toast('找不到聊天输入框', 'error');
-        return;
-      }
+  async function _flushResults() {
+    const texts = _resultQueue.splice(0);
+    _flushTimer = null;
+    if (!texts.length) return;
 
-      input.focus();
-      await sleep(200);
-      setInputValue(input, wrappedText);
-      await sleep(500);
+    const combined = texts.join('\n\n');
+    const wrappedText = `<tool_result>\n${combined}\n</tool_result>`;
 
-      if (!getAutoSendEnabled()) {
-        toast('工具结果已填入输入框', 'info');
-        return;
-      }
+    const input = findInputElement();
+    if (!input) {
+      toast('找不到聊天输入框', 'error');
+      return;
+    }
 
-      simulateEnter(input);
-      await sleep(300);
+    input.focus();
+    await sleep(200);
+    setInputValue(input, wrappedText);
+    await sleep(500);
+
+    if (!getAutoSendEnabled()) {
+      toast('工具结果已填入输入框', 'info');
+      return;
+    }
+
+    // 先 Enter；若未清空（Enter 未生效）才点按钮，避免双重发送
+    simulateEnter(input);
+    await sleep(500);
+    const remaining = (input.value !== undefined ? input.value : input.textContent) || '';
+    if (remaining.trim().length > 0) {
       const sendBtn = findSendButton();
       if (sendBtn) sendBtn.click();
+    }
 
-      toast('工具结果已发送', 'success');
-    }, 1500);
+    toast('工具结果已发送', 'success');
   }
 
   function findInputElement() {
@@ -806,7 +873,7 @@
     panel.id = 'mcp-panel';
     panel.innerHTML = `
       <div class="hd">
-        <h3>DS MCP Bridge <span class="ver">v4.2.0</span></h3>
+        <h3>DS MCP Bridge <span class="ver">v4.2.2</span></h3>
         <button class="cls">&times;</button>
       </div>
       <div id="mcp-tabs">
@@ -913,7 +980,7 @@
     async function refreshStatus() {
       const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
       secStatus.innerHTML = '<div class="mcp-status">连接中...</div>';
-      const client = new MCPClient(mcpUrl);
+      const client = getMCPClient();
       const healthy = await client.checkHealth();
 
       if (!healthy) {
@@ -1106,8 +1173,7 @@
         });
 
         resultDiv.innerHTML = '<div class="mcp-result">执行中...</div>';
-        const mcpUrl = GM_getValue('mcp_url', DEFAULT_MCP_URL);
-        const client = new MCPClient(mcpUrl);
+        const client = getMCPClient();
         try {
           const result = await client.callTool(toolName, args);
           const text = result?.content?.[0]?.text || '(no result)';
@@ -1465,44 +1531,6 @@
 
       // Refresh
       secExt.querySelector('#ext-refresh')?.addEventListener('click', renderExtTab);
-
-      // Start/Stop/Remove
-      secExt.querySelectorAll('.ext-start').forEach(btn => {
-        btn.onclick = async () => {
-          const name = btn.dataset.name;
-          try {
-            const result = await extApiCall(`/api/external-servers/${name}/start`, 'POST');
-            toast(result.ok ? `${name} 已启动` : result.error, result.ok ? 'success' : 'error');
-            renderExtTab(); refreshStatus();
-          } catch (e) { toast(e.message, 'error'); }
-        };
-      });
-
-      secExt.querySelectorAll('.ext-stop').forEach(btn => {
-        btn.onclick = async () => {
-          const name = btn.dataset.name;
-          try {
-            const result = await extApiCall(`/api/external-servers/${name}/stop`, 'POST');
-            toast(result.ok ? `${name} 已停止` : result.error, result.ok ? 'success' : 'error');
-            renderExtTab(); refreshStatus();
-          } catch (e) { toast(e.message, 'error'); }
-        };
-      });
-
-      secExt.querySelectorAll('.ext-remove').forEach(btn => {
-        btn.onclick = async () => {
-          const name = btn.dataset.name;
-          if (!confirm(`确定删除 ${name}？`)) return;
-          try {
-            const result = await extApiCall(`/api/external-servers/${name}`, 'DELETE');
-            toast(result.ok ? `${name} 已删除` : result.error, result.ok ? 'success' : 'error');
-            renderExtTab(); refreshStatus();
-          } catch (e) { toast(e.message, 'error'); }
-        };
-      });
-
-      // Refresh
-      secExt.querySelector('#ext-refresh').onclick = renderExtTab;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1595,6 +1623,8 @@
       const modelInput = secSettings.querySelector('#mcp-tts-model');
       if (modelInput) GM_setValue('tts_model', modelInput.value.trim());
       toast('已保存', 'success');
+      // 地址变更后重建共享 client
+      _sharedClient = null;
       refreshStatus();
     };
 
@@ -1689,11 +1719,12 @@
     // ═══════════════════════════════════════════════════════════════
     //  MCP Code Block Actions + System Instruction Folding
     // ═══════════════════════════════════════════════════════════════
+    // ── FIX 6: 解析失败返回 null，不再 fallback 成 {input} ──
     function parseToolArgs(rawArgs) {
       const text = (rawArgs || '').trim();
       if (!text) return {};
       try { return JSON.parse(text); }
-      catch { return { input: text }; }
+      catch { return null; }
     }
 
     function getMCPCodeInfo(block) {
@@ -1763,11 +1794,17 @@
         resendBtn.className = 'mcp-code-action resend';
         resendBtn.textContent = '重发';
         resendBtn.title = `重新执行 ${info.toolName}`;
+        // ── FIX 6: 参数解析失败友好提示 ──
         resendBtn.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
           const latest = getMCPCodeInfo(block) || info;
-          executeToolCall(latest.toolName, parseToolArgs(latest.rawArgs));
+          const args = parseToolArgs(latest.rawArgs);
+          if (args === null) {
+            toast(`无法解析 ${latest.toolName} 的参数`, 'error');
+            return;
+          }
+          executeToolCall(latest.toolName, args);
           toast(`已重发: ${latest.toolName}`, 'info');
         };
 
