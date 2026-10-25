@@ -119,6 +119,17 @@
           "secret": true
         }
       ]
+    },
+    {
+      "id": "deed-page",
+      "name": "deed.page 网页发布",
+      "description": "把 HTML 或整个文件夹发布为公开网址（https://<slug>.deed.page/）。无需 Key，安装即连接；发布内容会公开可访问。",
+      "category": "网络",
+      "config": {
+        "type": "http",
+        "url": "https://deed.page/mcp"
+      },
+      "params": []
     }
   ]
 }
