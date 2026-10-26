@@ -71,6 +71,22 @@ class TestPresetAPI:
         assert config["headers"] == {"Authorization": "Bearer " + key}
         assert "env" not in config
 
+    def test_deed_page_installs_without_params_or_headers(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from unittest.mock import AsyncMock
+        from server import external_proxy
+
+        start = AsyncMock(return_value={"ok": True, "tools": []})
+        monkeypatch.setattr(external_proxy, "add_server", start)
+        response = client.post("/api/presets/deed-page/install", json={})
+        assert response.status_code == 200
+        name, config = start.await_args.args
+        assert name == "deed-page"
+        assert config["url"] == "https://deed.page/mcp"
+        assert "headers" not in config
+        assert "env" not in config
+
 
 class TestDangerousPatterns:
     def test_taskkill_blocked(self):
