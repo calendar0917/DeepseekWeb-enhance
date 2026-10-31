@@ -184,3 +184,72 @@ test('system instruction folding skips already folded content', () => {
   assert.match(bridgeSource, /target\.querySelector\?\.\('\.mcp-sys-fold'\)/);
   assert.match(bridgeSource, /root\.querySelector\?\.\('\.mcp-sys-fold'\)/);
 });
+
+test('fetch_page cursor serializes pinned as boolean instead of 1/0', async () => {
+  const functions = [extractFunction(enhanceSource, 'fetchSessionsPage')].join('\n\n');
+  const sandbox = {
+    calls: [],
+    URLSearchParams,
+    module: { exports: {} },
+  };
+  sandbox.api = (path) => {
+    sandbox.calls.push(path);
+    return Promise.resolve({ biz_data: {} });
+  };
+
+  vm.runInNewContext(`${functions}
+    module.exports = { fetchSessionsPage };
+  `, sandbox);
+
+  const { fetchSessionsPage } = sandbox.module.exports;
+  await fetchSessionsPage({ pinned: true, updated_at: 123 });
+  await fetchSessionsPage({ pinned: false, updated_at: 456 });
+
+  assert.match(sandbox.calls[0], /lte_cursor\.pinned=true/);
+  assert.match(sandbox.calls[1], /lte_cursor\.pinned=false/);
+  assert.doesNotMatch(sandbox.calls.join('\n'), /lte_cursor\.pinned=[01]/);
+});
+
+test('session cursor keeps pinned as boolean', () => {
+  const functions = [
+    extractFunction(enhanceSource, 'getSessionUpdatedAt'),
+    extractFunction(enhanceSource, 'buildSessionCursor'),
+  ].join('\n\n');
+  const sandbox = { module: { exports: {} } };
+
+  vm.runInNewContext(`${functions}
+    module.exports = { buildSessionCursor };
+  `, sandbox);
+
+  const { buildSessionCursor } = sandbox.module.exports;
+
+  assert.equal(buildSessionCursor({ id: 'a', pinned: true, updated_at: 1 }).pinned, true);
+  assert.equal(buildSessionCursor({ id: 'b', pinned: false, updated_at: 2 }).pinned, false);
+});
+
+test('export body falls back to message fragments', () => {
+  const functions = [extractFunction(enhanceSource, 'messageText')].join('\n\n');
+  const sandbox = { module: { exports: {} } };
+
+  vm.runInNewContext(`${functions}
+    module.exports = { messageText };
+  `, sandbox);
+
+  const { messageText } = sandbox.module.exports;
+
+  assert.equal(messageText({ fragments: [{ type: 'REQUEST', content: 'hi' }] }), 'hi');
+  assert.equal(messageText({ content: 'legacy content' }), 'legacy content');
+
+  const answer = messageText({
+    fragments: [
+      { type: 'THINK', content: 'let me think' },
+      { type: 'TOOL_SEARCH', content: 'Found 3 web pages' },
+      { type: 'RESPONSE', content: 'final answer' },
+    ],
+  });
+
+  assert.match(answer, /let me think/);
+  assert.match(answer, /final answer/);
+  assert.doesNotMatch(answer, /Found 3 web pages/);
+  assert.equal(messageText({ fragments: [] }), '');
+});
