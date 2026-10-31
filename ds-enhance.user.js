@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DS Enhance
 // @namespace    https://github.com/calendar0917/DeepseekWeb-enhance
-// @version      3.3.1
+// @version      3.3.2
 // @description  批量删除、Fork 对话、会话分类、搜索、导出、批量重命名、多提示词注入
 // @author       ds-enhance
 // @homepageURL  https://github.com/calendar0917/DeepseekWeb-enhance
@@ -243,7 +243,10 @@
   async function fetchSessionsPage(cursor) {
     const params = new URLSearchParams({ count: '50' });
     if (cursor && cursor.updated_at != null) {
-      params.set('lte_cursor.pinned', String(cursor.pinned ? 1 : 0));
+      // 2026-10 API: pinned 必须是布尔值（"true"/"false"）。传 "1"/"0" 时服务端返回
+      // HTTP 400: Failed to deserialize query string: lte_cursor.pinned:
+      //           provided string was not `true` or `false`
+      params.set('lte_cursor.pinned', cursor.pinned ? 'true' : 'false');
       params.set('lte_cursor.updated_at', String(cursor.updated_at));
     }
     return api(`/chat_session/fetch_page?${params.toString()}`);
@@ -275,7 +278,7 @@
   function buildSessionCursor(session) {
     const updatedAt = getSessionUpdatedAt(session);
     if (updatedAt == null) return null;
-    return { pinned: session?.pinned ? 1 : 0, updated_at: updatedAt };
+    return { pinned: !!session?.pinned, updated_at: updatedAt };
   }
 
   function cursorKey(cursor) {
@@ -322,6 +325,27 @@
   const apiDeleteAll = () => apiWithRetry('/chat_session/delete_all', 'POST');
   const apiRename = (id, title) => apiWithRetry('/chat_session/update_title', 'POST', { chat_session_id: id, title });
   const apiHistory = (id) => api(`/chat/history_messages?chat_session_id=${id}`);
+
+  // 2026-09 API: chat_messages 不再带顶层 content，正文在 fragments[] 里
+  // （REQUEST / THINK / RESPONSE / TOOL_*）。不兼容处理会导致导出只有标题、正文为空。
+  function messageText(m) {
+    if (typeof m?.content === 'string' && m.content.trim()) return m.content;
+    const frags = Array.isArray(m?.fragments) ? m.fragments : [];
+    const parts = [];
+    for (const f of frags) {
+      const text = typeof f?.content === 'string' ? f.content.trim() : '';
+      if (!text) continue;
+      if (f.type === 'THINK') parts.push(`<details><summary>思考过程</summary>\n\n${text}\n\n</details>`);
+      else if (f.type === 'RESPONSE' || f.type === 'REQUEST') parts.push(text);
+    }
+    if (!parts.length) {
+      for (const f of frags) {
+        const text = typeof f?.content === 'string' ? f.content.trim() : '';
+        if (text && !String(f.type || '').startsWith('TOOL_') && f.type !== 'TIP') parts.push(text);
+      }
+    }
+    return parts.join('\n\n');
+  }
   const apiCreateShare = (sid, mids) => api('/share/create', 'POST', { chat_session_id: sid, message_ids: mids });
   const apiForkShare = (shareId) => api('/share/fork', 'POST', { share_id: shareId });
 
@@ -1147,7 +1171,7 @@
         if (r.error) { md += `> 导出失败: ${r.error}\n\n`; return; }
         r.messages.forEach(m => {
           const role = m.role === 'USER' ? '**用户**' : '**助手**';
-          md += `### ${role}\n\n${m.content || ''}\n\n---\n\n`;
+          md += `### ${role}\n\n${messageText(m)}\n\n---\n\n`;
         });
         md += '\n';
       });
@@ -1612,7 +1636,7 @@
   });
   domObserver.observe(document.body, { childList: true, subtree: true });
 
-  console.log('[DSE] DeepSeek Chat Enhance v3.3.1 loaded');
+  console.log('[DSE] DeepSeek Chat Enhance v3.3.2 loaded');
 
   }); // end waitForDOM
 })();
